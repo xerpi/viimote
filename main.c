@@ -36,15 +36,6 @@
 #define EXT_BALANCE		0x0402
 #define EXT_MOTIONPLUS		0x0405
 
-typedef struct {
-	unsigned char id;
-	unsigned char unk1;
-	unsigned short unk2;
-	unsigned int unk3;
-	unsigned int mac0;
-	unsigned int mac1;
-} BtHidEvent;
-
 static SceUID bt_mempool_uid = -1;
 static SceUID bt_thread_uid = -1;
 static SceUID bt_cb_uid = -1;
@@ -319,12 +310,12 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 	while (1) {
 		int ret;
-		BtHidEvent hid_event;
+		SceBtEvent hid_event;
 
 		memset(&hid_event, 0, sizeof(hid_event));
 
 		do {
-			ret = ksceBtReadEvent((SceBtEvent *)&hid_event, 1);
+			ret = ksceBtReadEvent(&hid_event, 1);
 		} while (ret == SCE_BT_ERROR_CB_OVERFLOW);
 
 		if (ret <= 0) {
@@ -333,7 +324,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 		LOG("->Event:");
 		for (int i = 0; i < 0x10; i++)
-			LOG(" %02X", ((unsigned char *)&hid_event)[i]);
+			LOG(" %02X", hid_event.data[i]);
 		LOG("\n");
 
 		switch (hid_event.id) {
@@ -535,8 +526,6 @@ int module_start(SceSize argc, const void *args)
 		&SceBt_sub_22999C8_ref, SceBt_modinfo.modid, 0,
 		0x22999C8 - 0x2280000, 1, SceBt_sub_22999C8_hook_func);
 
-	LOG("SceBt_sub_22999C8 hook UID: 0x%08X\n", SceBt_sub_22999C8_hook_uid);
-
 	/* SceCtrl hooks */
 	SceCtrl_sceCtrlPeekBufferPositive_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
 		&SceCtrl_sceCtrlPeekBufferPositive_ref, "SceCtrl", TAI_ANY_LIBRARY,
@@ -545,8 +534,6 @@ int module_start(SceSize argc, const void *args)
 	SceCtrl_sceCtrlPeekBufferPositive2_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
 		&SceCtrl_sceCtrlPeekBufferPositive2_ref, "SceCtrl", TAI_ANY_LIBRARY,
 		0x15F81E8C, SceCtrl_sceCtrlPeekBufferPositive2_hook_func);
-
-	LOG("SceBt_sub_22999C8 hook UID: 0x%08X\n", SceBt_sub_22999C8_hook_uid);
 
 	SceKernelMemPoolCreateOpt opt;
 	opt.size = 0x1C;
