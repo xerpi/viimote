@@ -13,11 +13,28 @@
 #define RPT_LED_RUMBLE		0x11
 #define RPT_RPT_MODE		0x12
 #define RPT_STATUS_REQ		0x15
+#define RPT_WRITE		0x16
+#define RPT_READ_REQ		0x17
 
 #define RPT_MODE_BUF_LEN	2
+#define RPT_READ_REQ_LEN	6
+#define RPT_WRITE_LEN		21
 
 #define RPT_BTN			0x30
 #define RPT_BTN_ACC		0x31
+#define RPT_BTN_EXT8		0x32
+
+#define RW_EEPROM		0x00
+#define RW_REG			0x04
+#define RW_DECODE		0x00
+
+/* Extension Values */
+#define EXT_NONE		0x2E2E
+#define EXT_PARTIAL		0xFFFF
+#define EXT_NUNCHUK		0x0000
+#define EXT_CLASSIC		0x0101
+#define EXT_BALANCE		0x0402
+#define EXT_MOTIONPLUS		0x0405
 
 typedef struct {
 	unsigned char id;
@@ -37,6 +54,17 @@ static int wiimote_connected = 0;
 static unsigned int wiimote_mac0 = 0;
 static unsigned int wiimote_mac1 = 0;
 static unsigned short wiimote_buttons = 0;
+static int wiimote_init_ext_step = 0;
+static int wiimote_nunchuk_connected = 0;
+static struct {
+	unsigned char sx;
+	unsigned char sy;
+	unsigned short ax;
+	unsigned short ay;
+	unsigned short az;
+	unsigned char bc;
+	unsigned char bz;
+} wiimote_nunchuk_data = { 0 };
 
 static tai_hook_ref_t SceBt_sub_22999C8_ref;
 static SceUID SceBt_sub_22999C8_hook_uid = -1;
@@ -89,7 +117,7 @@ static int wiimote_send_rpt(unsigned int mac0, unsigned int mac1, uint8_t flags,
 	return 0;
 }
 
-/*static int wiimote_request_status(unsigned int mac0, unsigned int mac1)
+static int wiimote_request_status(unsigned int mac0, unsigned int mac1)
 {
 	unsigned char data;
 
@@ -102,15 +130,11 @@ static int wiimote_send_rpt(unsigned int mac0, unsigned int mac1, uint8_t flags,
 	return 0;
 }
 
-static int update_rpt_mode(unsigned int mac0, unsigned int mac1, int8_t rpt_mode)
+static int wiimote_set_rpt_type(unsigned int mac0, unsigned int mac1, uint8_t rpt_type)
 {
 	unsigned char buf[RPT_MODE_BUF_LEN];
-	uint8_t rpt_type;
-	const int continuous = 1;
+	const int continuous = 0;
 
-	rpt_type = RPT_BTN_ACC;
-
-	// Send SET_REPORT
 	buf[0] = continuous ? 0x04 : 0;
 	buf[1] = rpt_type;
 	if (wiimote_send_rpt(mac0, mac1, 0, RPT_RPT_MODE, RPT_MODE_BUF_LEN, buf)) {
@@ -121,11 +145,6 @@ static int update_rpt_mode(unsigned int mac0, unsigned int mac1, int8_t rpt_mode
 	return 0;
 }
 
-static int wiimote_set_rpt_mode(unsigned int mac0, unsigned int mac1)
-{
-	return update_rpt_mode(mac0, mac1, -1);
-}*/
-
 static int wiimote_set_led(unsigned int mac0, unsigned int mac1, uint8_t led)
 {
 	unsigned char data;
@@ -133,6 +152,48 @@ static int wiimote_set_led(unsigned int mac0, unsigned int mac1, uint8_t led)
 	data = (led & 0x0F) << 4;
 	if (wiimote_send_rpt(mac0, mac1, 0, RPT_LED_RUMBLE, 1, &data)) {
 		LOG("Report send error (led)\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int wiimote_request_mem_data_read(unsigned int mac0, unsigned int mac1, uint8_t flags,
+					 uint32_t offset, uint16_t len)
+{
+	unsigned char buf[RPT_READ_REQ_LEN];
+
+	/* Compose read request packet */
+	buf[0] = flags & (RW_EEPROM | RW_REG);
+	buf[1] = (unsigned char)((offset >> 16) & 0xFF);
+	buf[2] = (unsigned char)((offset >> 8) & 0xFF);
+	buf[3] = (unsigned char)(offset & 0xFF);
+	buf[4] = (unsigned char)((len >> 8) & 0xFF);
+	buf[5] = (unsigned char)(len & 0xFF);
+
+	if (wiimote_send_rpt(mac0, mac1, 0, RPT_READ_REQ, RPT_READ_REQ_LEN, buf)) {
+		LOG("Report send error (read)\n");
+		return -1;
+	}
+
+	return 0;
+}
+
+static int wiimote_request_mem_data_write(unsigned int mac0, unsigned int mac1, uint8_t flags,
+					 uint32_t offset, uint16_t len, const void *data)
+{
+	unsigned char buf[RPT_WRITE_LEN];
+
+	/* Compose write packet */
+	buf[0] = flags;
+	buf[1] = (unsigned char)((offset >> 16) & 0xFF);
+	buf[2] = (unsigned char)((offset >> 8) & 0xFF);
+	buf[3] = (unsigned char)(offset & 0xFF);
+	buf[4] = (unsigned char)len;
+	memcpy(buf + 5, data, len);
+
+	if (wiimote_send_rpt(mac0, mac1, 0, RPT_WRITE, RPT_WRITE_LEN, buf)) {
+		LOG("Report send error (read)\n");
 		return -1;
 	}
 
@@ -194,6 +255,16 @@ static void patch_ctrldata_positive(SceCtrlData *pad_data, int count, unsigned s
 		if (buttons & (1 << 12))
 			kpad_data.buttons |= SCE_CTRL_START;
 
+		if (wiimote_nunchuk_connected) {
+			kpad_data.lx = wiimote_nunchuk_data.sx;
+			kpad_data.ly = 255 - wiimote_nunchuk_data.sy;
+
+			if (wiimote_nunchuk_data.bz)
+				kpad_data.buttons |= SCE_CTRL_R1;
+			if (wiimote_nunchuk_data.bc)
+				kpad_data.buttons |= SCE_CTRL_L1;
+		}
+
 		ksceKernelMemcpyKernelToUser((uintptr_t)upad_data, &kpad_data, sizeof(kpad_data));
 
 		upad_data++;
@@ -226,10 +297,25 @@ static int SceCtrl_sceCtrlPeekBufferPositive2_hook_func(int port, SceCtrlData *p
 	return ret;
 }
 
+static void enqueue_read_request(unsigned int mac0, unsigned int mac1,
+				 SceBtHidRequest *request, unsigned char *buffer,
+				 unsigned int length)
+{
+	memset(request, 0, sizeof(*request));
+	memset(buffer, 0, length);
+
+	request->type = 0;
+	request->buffer = buffer;
+	request->length = length;
+	request->next = request;
+
+	ksceBtHidTransfer(mac0, mac1, request);
+}
+
 static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common)
 {
 	static SceBtHidRequest hid_request;
-	static unsigned char recv_buff[8];
+	static unsigned char recv_buff[0x100];
 
 	while (1) {
 		int ret;
@@ -245,10 +331,10 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			break;
 		}
 
-		/*LOG("->Event:");
+		LOG("->Event:");
 		for (int i = 0; i < 0x10; i++)
 			LOG(" %02X", ((unsigned char *)&hid_event)[i]);
-		LOG("\n");*/
+		LOG("\n");
 
 		switch (hid_event.id) {
 		case 0x01: { /* Inquiry result event */
@@ -274,36 +360,121 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			wiimote_connected = 1;
 			break;
 
-		case 0x0A: /* HID message received */
+		case 0x0A: /* HID reply to 0-type request */
+
+			LOG("Wiimote 0x0A event: 0x%02X\n", recv_buff[0]);
 
 			switch (recv_buff[0]) {
+			case 0x20: /* Status */
+				/* Extension connected */
+				if (recv_buff[3] & 0x02) {
+					LOG("Extension connected!\n");
+
+					/* Read extension ID */
+					if (wiimote_request_mem_data_read(hid_event.mac0, hid_event.mac1, RW_REG, 0xA400FE, 2)) {
+						LOG("Read error (extension error)\n");
+						break;
+					}
+				} else {
+					wiimote_nunchuk_connected = 0;
+				}
+
+				break;
+
+			case 0x21: /* Read Memory and Registers Data */
+				switch ((recv_buff[6] << 8) | recv_buff[7]) {
+				case EXT_NONE:
+					LOG("No extension\n");
+					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN);
+					break;
+				case EXT_NUNCHUK:
+					LOG("Nunchuk extension\n");
+					wiimote_nunchuk_connected = 1;
+					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN_EXT8);
+					break;
+				case EXT_PARTIAL: {
+					LOG("Partial extension\n");
+					unsigned char buf[1];
+
+					/* Initialize extension register space */
+					buf[0] = 0x55;
+					if (wiimote_request_mem_data_write(hid_event.mac0, hid_event.mac1, RW_REG, 0xA400F0, 1, buf)) {
+						LOG("Extension initialization error\n");
+						break;
+					}
+
+					wiimote_init_ext_step = 1;
+
+					break;
+				}
+
+				default:
+					LOG("Unknown extension: %02X%02X\n",
+						recv_buff[7], recv_buff[6]);
+					break;
+				}
+				break;
+
+			case 0x22: /* Acknowledge output report, return function result */
+				if (wiimote_init_ext_step == 1) {
+					unsigned char buf[1];
+
+					buf[0] = 0x00;
+					if (wiimote_request_mem_data_write(hid_event.mac0, hid_event.mac1, RW_REG, 0xA400FB, 1, buf)) {
+						LOG("Extension initialization error\n");
+						break;
+					}
+
+					wiimote_init_ext_step = 2;
+				} else if (wiimote_init_ext_step == 2) {
+					/* Read extension ID */
+					if (wiimote_request_mem_data_read(hid_event.mac0, hid_event.mac1, RW_REG, 0xA400FE, 2)) {
+						LOG("Read error (extension error)\n");
+						break;
+					}
+
+					wiimote_init_ext_step = 0;
+				}
+				break;
+
 			case 0x30: /* Core Buttons */
 				wiimote_buttons = (recv_buff[2] << 8) | recv_buff[1];
+
+				enqueue_read_request(wiimote_mac0, wiimote_mac1,
+					&hid_request, recv_buff, sizeof(recv_buff));
+
+				break;
+
+			case 0x32: /* Core Buttons with 8 Extension bytes */
+				wiimote_buttons = (recv_buff[2] << 8) | recv_buff[1];
+
+				wiimote_nunchuk_data.sx = recv_buff[3];
+				wiimote_nunchuk_data.sy = recv_buff[4];
+				wiimote_nunchuk_data.ax = (recv_buff[5] << 2) | (recv_buff[8] >> 2);
+				wiimote_nunchuk_data.ay = (recv_buff[6] << 2) | (recv_buff[8] >> 4);
+				wiimote_nunchuk_data.az = (recv_buff[7] << 2) | (recv_buff[8] >> 6);
+				wiimote_nunchuk_data.bc = !(recv_buff[8] & 0x2);
+				wiimote_nunchuk_data.bz = !(recv_buff[8] & 0x1);
+
+				enqueue_read_request(wiimote_mac0, wiimote_mac1,
+					&hid_request, recv_buff, sizeof(recv_buff));
+
+				break;
+
+			default:
+				LOG("Unknown Wiimote event: 0x%02X\n", recv_buff[0]);
 				break;
 			}
 
-			memset(&hid_request, 0, sizeof(hid_request));
-			memset(recv_buff, 0, sizeof(recv_buff));
-
-			/* Enqueue a new read request */
-			hid_request.type = 0;
-			hid_request.buffer = recv_buff;
-			hid_request.length = sizeof(recv_buff);
-			hid_request.next = &hid_request;
-
-			ksceBtHidTransfer(hid_event.mac0, hid_event.mac1, &hid_request);
 			break;
 
-		case 0x0B:
-			memset(&hid_request, 0, sizeof(hid_request));
-			memset(recv_buff, 0, sizeof(recv_buff));
+		case 0x0B: /* HID reply to 1-type request */
 
-			hid_request.type = 0;
-			hid_request.buffer = recv_buff;
-			hid_request.length = sizeof(recv_buff);
-			hid_request.next = &hid_request;
+			//LOG("Wiimote 0x0B event: 0x%02X\n", recv_buff[0]);
 
-			ksceBtHidTransfer(hid_event.mac0, hid_event.mac1, &hid_request);
+			enqueue_read_request(wiimote_mac0, wiimote_mac1,
+				&hid_request, recv_buff, sizeof(recv_buff));
+
 			break;
 
 		case 0x06: /* Device disconnect event*/

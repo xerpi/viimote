@@ -16,8 +16,8 @@ link_directories(
 	${CMAKE_CURRENT_BINARY_DIR}
 )
 
-if (NOT ${RELEASE})
-	add_definitions(-DENABLE_LOGGING)
+if (${RELEASE} EQUAL 1)
+	add_definitions(-DRELEASE)
 endif()
 
 add_executable(${PROJECT_NAME}.elf
