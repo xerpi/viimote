@@ -58,7 +58,7 @@ static struct {
 	unsigned short az;
 	unsigned char bc;
 	unsigned char bz;
-} wiimote_nunchuk_data = { 0 };
+} wiimote_nunchuk_data;
 
 static tai_hook_ref_t SceBt_sub_22999C8_ref;
 static SceUID SceBt_sub_22999C8_hook_uid = -1;
@@ -66,6 +66,17 @@ static tai_hook_ref_t SceCtrl_sceCtrlPeekBufferPositive_ref;
 static SceUID SceCtrl_sceCtrlPeekBufferPositive_hook_uid = -1;
 static tai_hook_ref_t SceCtrl_sceCtrlPeekBufferPositive2_ref;
 static SceUID SceCtrl_sceCtrlPeekBufferPositive2_hook_uid = -1;
+
+static inline void wiimote_nunchuk_data_reset(void)
+{
+	wiimote_nunchuk_data.sx = 1 << 7;
+	wiimote_nunchuk_data.sy = 1 << 7;
+	wiimote_nunchuk_data.ax = 1 << 9;
+	wiimote_nunchuk_data.ay = 1 << 9;
+	wiimote_nunchuk_data.az = 1 << 9;
+	wiimote_nunchuk_data.bc = 1;
+	wiimote_nunchuk_data.bz = 1;
+}
 
 static inline void *mempool_alloc(unsigned int size)
 {
@@ -420,6 +431,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 					}
 				} else {
 					wiimote_nunchuk_connected = 0;
+					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN);
 				}
 
 				break;
@@ -432,6 +444,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 					break;
 				case EXT_NUNCHUK:
 					LOG("Nunchuk extension\n");
+					wiimote_nunchuk_data_reset();
 					wiimote_nunchuk_connected = 1;
 					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN_EXT8);
 					break;
@@ -536,9 +549,11 @@ static int viimote_bt_thread(SceSize args, void *argp)
 
 	TEST_CALL(ksceBtRegisterCallback, bt_cb_uid, 0, 0xFFFFFFFF, 0xFFFFFFFF);
 
+#ifndef RELEASE
 	ksceBtStartInquiry();
 	ksceKernelDelayThreadCB(2 * 1000 * 1000);
 	ksceBtStopInquiry();
+#endif
 
 	while (bt_thread_run) {
 		ksceKernelDelayThreadCB(200 * 1000);
