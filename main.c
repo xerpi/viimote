@@ -10,7 +10,8 @@
 extern int module_get_offset(SceUID pid, SceUID modid, int segidx, size_t offset, uintptr_t *addr);
 
 #define WIIMOTE_VID 0x057E
-#define WIIMOTE_PID 0x0306
+#define WIIMOTE_OLD_PID 0x0306
+#define WIIMOTE_NEW_PID 0x0330
 
 /* Grabbed from: https://github.com/abstrakraft/cwiid */
 #define RPT_LED_RUMBLE		0x11
@@ -76,6 +77,21 @@ static inline void wiimote_nunchuk_data_reset(void)
 	wiimote_nunchuk_data.az = 1 << 9;
 	wiimote_nunchuk_data.bc = 1;
 	wiimote_nunchuk_data.bz = 1;
+}
+
+static int is_wiimote(unsigned short vid_pid[2], const char *name)
+{
+	if (vid_pid[0] == WIIMOTE_VID &&
+	    (vid_pid[1] == WIIMOTE_OLD_PID || vid_pid[1] == WIIMOTE_NEW_PID)) {
+		return 1;
+	}
+
+	if (!strcmp(name, "Nintendo RVL-CNT-01"))
+		return 1;
+	else if (!strcmp(name, "Nintendo RVL-CNT-01-TR"))
+		return 1;
+
+	return 0;
 }
 
 static inline void *mempool_alloc(unsigned int size)
@@ -236,10 +252,10 @@ static int SceBt_sub_22999C8_hook_func(int r0, int r1)
 
 	if (v2 && !(foo & 2)) {
 		unsigned int v5 = *(unsigned int *)(v2 + 0x14A4);
-		unsigned short vid = *(unsigned short *)(v5 + 0x28);
-		unsigned short pid = *(unsigned short *)(v5 + 0x2A);
+		unsigned short *vid_pid = (unsigned short *)(v5 + 0x28);
+		const char *name = (const char *)(v5 + 0x80);
 
-		if (vid == WIIMOTE_VID && pid == WIIMOTE_PID) {
+		if (is_wiimote(vid_pid, name)) {
 			unsigned int *v8_ptr = (unsigned int *)(*(unsigned int *)v2 + 8);
 
 			/*
@@ -370,9 +386,12 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 		switch (hid_event.id) {
 		case 0x01: { /* Inquiry result event */
 			unsigned short vid_pid[2];
-			ksceBtGetVidPid(hid_event.mac0, hid_event.mac1, vid_pid);
+			char name[0x79];
 
-			if (vid_pid[0] == WIIMOTE_VID && vid_pid[1] == WIIMOTE_PID) {
+			ksceBtGetVidPid(hid_event.mac0, hid_event.mac1, vid_pid);
+			ksceBtGetDeviceName(hid_event.mac0, hid_event.mac1, name);
+
+			if (is_wiimote(vid_pid, name)) {
 				ksceBtStopInquiry();
 				wiimote_mac0 = hid_event.mac0;
 				wiimote_mac1 = hid_event.mac1;
@@ -403,15 +422,19 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			break;
 		}
 
+		case 0x05: /* Connection accepted event */
+			wiimote_set_led(hid_event.mac0, hid_event.mac1, 1);
+			wiimote_connected = 1;
+			break;
+
+		case 0x06: /* Device disconnect event*/
+			wiimote_connected = 0;
+			break;
+
 		case 0x08: /* Connection requested event */
 			/*
 			 * Do nothing since we will get a 0x05 event afterwards.
 			 */
-			break;
-
-		case 0x05: /* Connection accepted event */
-			wiimote_set_led(hid_event.mac0, hid_event.mac1, 1);
-			wiimote_connected = 1;
 			break;
 
 		case 0x0A: /* HID reply to 0-type request */
@@ -531,10 +554,6 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			enqueue_read_request(hid_event.mac0, hid_event.mac1,
 				&hid_request, recv_buff, sizeof(recv_buff));
 
-			break;
-
-		case 0x06: /* Device disconnect event*/
-			wiimote_connected = 0;
 			break;
 		}
 	}
