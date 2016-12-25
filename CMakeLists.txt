@@ -28,6 +28,7 @@ add_executable(${PROJECT_NAME}.elf
 target_link_libraries(${PROJECT_NAME}.elf
 	gcc
 	taihenForKernel_stub
+	taihenModuleUtils_stub
 	SceSysclibForDriver_stub
 	SceSysmemForDriver_stub
 	SceSysmemForKernel_stub

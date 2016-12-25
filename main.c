@@ -6,6 +6,9 @@
 #include <taihen.h>
 #include "log.h"
 
+/* Imported from taiHEN */
+extern int module_get_offset(SceUID pid, SceUID modid, int segidx, size_t offset, uintptr_t *addr);
+
 #define WIIMOTE_VID 0x057E
 #define WIIMOTE_PID 0x0306
 
@@ -72,6 +75,30 @@ static inline void *mempool_alloc(unsigned int size)
 static inline void mempool_free(void *ptr)
 {
 	ksceKernelMemPoolFree(bt_mempool_uid, ptr);
+}
+
+static int vita_get_mac(unsigned char mac[6])
+{
+	int ret;
+	uintptr_t addr;
+	tai_module_info_t SceBt_modinfo;
+
+	SceBt_modinfo.size = sizeof(SceBt_modinfo);
+	ret = taiGetModuleInfoForKernel(KERNEL_PID, "SceBt", &SceBt_modinfo);
+	if (ret < 0)
+		return 0;
+
+	addr = 0;
+	ret = module_get_offset(KERNEL_PID, SceBt_modinfo.modid, 1, 0x453A4, &addr);
+	if (ret < 0)
+		return 0;
+
+	if (addr != 0) {
+		memcpy(mac, (void *)addr, 6);
+		return 1;
+	}
+
+	return 0;
 }
 
 static int wiimote_send_rpt(unsigned int mac0, unsigned int mac1, uint8_t flags, uint8_t report,
@@ -245,6 +272,8 @@ static void patch_ctrldata_positive(SceCtrlData *pad_data, int count, unsigned s
 			kpad_data.buttons |= SCE_CTRL_CROSS;
 		if (buttons & (1 << 12))
 			kpad_data.buttons |= SCE_CTRL_START;
+		if (buttons & (1 << 15))
+			kpad_data.buttons |= SCE_CTRL_INTERCEPTED;
 
 		if (wiimote_nunchuk_connected) {
 			kpad_data.lx = wiimote_nunchuk_data.sx;
@@ -346,7 +375,30 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			}
 			break;
 
-		case 0x05: /* Device connected event */
+		case 0x03: { /* Pin request event */
+			unsigned char mac[6];
+
+			if (vita_get_mac(mac)) {
+				int i;
+				unsigned char pin[6];
+
+				for (i = 0; i < 6; i++)
+					pin[i] = mac[5 - i];
+
+				ksceBtReplyPinCode(hid_event.mac0, hid_event.mac1,
+					pin, sizeof(pin));
+			}
+
+			break;
+		}
+
+		case 0x08: /* Connection requested event */
+			/*
+			 * Do nothing since we will get a 0x05 event afterwards.
+			 */
+			break;
+
+		case 0x05: /* Connection accepted event */
 			wiimote_set_led(hid_event.mac0, hid_event.mac1, 1);
 			wiimote_connected = 1;
 			break;
@@ -431,7 +483,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			case 0x30: /* Core Buttons */
 				wiimote_buttons = (recv_buff[2] << 8) | recv_buff[1];
 
-				enqueue_read_request(wiimote_mac0, wiimote_mac1,
+				enqueue_read_request(hid_event.mac0, hid_event.mac1,
 					&hid_request, recv_buff, sizeof(recv_buff));
 
 				break;
@@ -447,7 +499,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 				wiimote_nunchuk_data.bc = !(recv_buff[8] & 0x2);
 				wiimote_nunchuk_data.bz = !(recv_buff[8] & 0x1);
 
-				enqueue_read_request(wiimote_mac0, wiimote_mac1,
+				enqueue_read_request(hid_event.mac0, hid_event.mac1,
 					&hid_request, recv_buff, sizeof(recv_buff));
 
 				break;
@@ -463,7 +515,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 			//LOG("Wiimote 0x0B event: 0x%02X\n", recv_buff[0]);
 
-			enqueue_read_request(wiimote_mac0, wiimote_mac1,
+			enqueue_read_request(hid_event.mac0, hid_event.mac1,
 				&hid_request, recv_buff, sizeof(recv_buff));
 
 			break;
