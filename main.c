@@ -63,6 +63,8 @@ static struct {
 
 static tai_hook_ref_t SceBt_sub_22999C8_ref;
 static SceUID SceBt_sub_22999C8_hook_uid = -1;
+static tai_hook_ref_t SceBt_sub_228C3F0_ref;
+static SceUID SceBt_sub_228C3F0_hook_uid = -1;
 static tai_hook_ref_t SceCtrl_sceCtrlPeekBufferPositive_ref;
 static SceUID SceCtrl_sceCtrlPeekBufferPositive_hook_uid = -1;
 static tai_hook_ref_t SceCtrl_sceCtrlPeekBufferPositive2_ref;
@@ -79,7 +81,7 @@ static inline void wiimote_nunchuk_data_reset(void)
 	wiimote_nunchuk_data.bz = 1;
 }
 
-static int is_wiimote(unsigned short vid_pid[2], const char *name)
+static int is_wiimote(const unsigned short vid_pid[2], const char *name)
 {
 	if (vid_pid[0] == WIIMOTE_VID &&
 	    (vid_pid[1] == WIIMOTE_OLD_PID || vid_pid[1] == WIIMOTE_NEW_PID)) {
@@ -245,18 +247,17 @@ static int wiimote_request_mem_data_write(unsigned int mac0, unsigned int mac1, 
 	return 0;
 }
 
-static int SceBt_sub_22999C8_hook_func(int r0, int r1)
+static int SceBt_sub_22999C8_hook_func(void *dev_base_ptr, int r1)
 {
-	unsigned int foo = *(unsigned int *)(r1 + 4);
-	void *v2 = (void **)r0;
+	unsigned int flags = *(unsigned int *)(r1 + 4);
 
-	if (v2 && !(foo & 2)) {
-		unsigned int v5 = *(unsigned int *)(v2 + 0x14A4);
-		unsigned short *vid_pid = (unsigned short *)(v5 + 0x28);
-		const char *name = (const char *)(v5 + 0x80);
+	if (dev_base_ptr && !(flags & 2)) {
+		const void *dev_info = *(const void **)(dev_base_ptr + 0x14A4);
+		const unsigned short *vid_pid = (const unsigned short *)(dev_info + 0x28);
+		const char *name = (const char *)(dev_info + 0x80);
 
 		if (is_wiimote(vid_pid, name)) {
-			unsigned int *v8_ptr = (unsigned int *)(*(unsigned int *)v2 + 8);
+			unsigned int *v8_ptr = (unsigned int *)(*(unsigned int *)dev_base_ptr + 8);
 
 			/*
 			 * We need to enable the following bits in order to make the Vita
@@ -266,7 +267,39 @@ static int SceBt_sub_22999C8_hook_func(int r0, int r1)
 		}
 	}
 
-	return TAI_CONTINUE(int, SceBt_sub_22999C8_ref, r0, r1);
+	return TAI_CONTINUE(int, SceBt_sub_22999C8_ref, dev_base_ptr, r1);
+}
+
+static int SceBt_sub_228C3F0_hook_func(void *base_ptr)
+{
+	int ret;
+	unsigned int old_value;
+	int patched = 0;
+	unsigned int flags = *(unsigned int *)(base_ptr + 4);
+	const void *dev_info = *(const void **)(base_ptr + 0x14A4);
+
+	if (!(flags & 0x200) && !(flags & 2)) {
+		const unsigned short *vid_pid = (const unsigned short *)(dev_info + 0x28);
+		const char *name = (const char *)(dev_info + 0x80);
+
+		if (is_wiimote(vid_pid, name)) {
+			/*
+			 * We need to set the following bits in order to make the Vita
+			 * request a PIN code.
+			 */
+			old_value = *(unsigned int *)(dev_info + 0x20);
+			*(unsigned int *)(dev_info + 0x20) &= ~0x40;
+			patched = 1;
+		}
+	}
+
+	ret = TAI_CONTINUE(int, SceBt_sub_228C3F0_ref, base_ptr);
+
+	if (patched) {
+		*(unsigned int *)(dev_info + 0x20) = old_value;
+	}
+
+	return ret;
 }
 
 static void patch_ctrldata_positive(SceCtrlData *pad_data, int count, unsigned short buttons)
@@ -612,6 +645,10 @@ int module_start(SceSize argc, const void *args)
 		&SceBt_sub_22999C8_ref, SceBt_modinfo.modid, 0,
 		0x22999C8 - 0x2280000, 1, SceBt_sub_22999C8_hook_func);
 
+	SceBt_sub_228C3F0_hook_uid = taiHookFunctionOffsetForKernel(KERNEL_PID,
+		&SceBt_sub_228C3F0_ref, SceBt_modinfo.modid, 0,
+		0x228C3F0 - 0x2280000, 1, SceBt_sub_228C3F0_hook_func);
+
 	/* SceCtrl hooks */
 	SceCtrl_sceCtrlPeekBufferPositive_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
 		&SceCtrl_sceCtrlPeekBufferPositive_ref, "SceCtrl", TAI_ANY_LIBRARY,
@@ -664,6 +701,12 @@ int module_stop(SceSize argc, const void *args)
 		taiHookReleaseForKernel(SceBt_sub_22999C8_hook_uid,
 			SceBt_sub_22999C8_ref);
 		LOG("Unhooked SceBt_sub_22999C8\n");
+	}
+
+	if (SceBt_sub_228C3F0_hook_uid > 0) {
+		taiHookReleaseForKernel(SceBt_sub_228C3F0_hook_uid,
+			SceBt_sub_228C3F0_ref);
+		LOG("Unhooked SceBt_sub_228C3F0\n");
 	}
 
 	if (SceCtrl_sceCtrlPeekBufferPositive_hook_uid > 0) {
