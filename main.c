@@ -106,30 +106,6 @@ static inline void mempool_free(void *ptr)
 	ksceKernelMemPoolFree(bt_mempool_uid, ptr);
 }
 
-static int vita_get_mac(unsigned char mac[6])
-{
-	int ret;
-	uintptr_t addr;
-	tai_module_info_t SceBt_modinfo;
-
-	SceBt_modinfo.size = sizeof(SceBt_modinfo);
-	ret = taiGetModuleInfoForKernel(KERNEL_PID, "SceBt", &SceBt_modinfo);
-	if (ret < 0)
-		return 0;
-
-	addr = 0;
-	ret = module_get_offset(KERNEL_PID, SceBt_modinfo.modid, 1, 0x453A4, &addr);
-	if (ret < 0)
-		return 0;
-
-	if (addr != 0) {
-		memcpy(mac, (void *)addr, 6);
-		return 1;
-	}
-
-	return 0;
-}
-
 static int wiimote_send_rpt(unsigned int mac0, unsigned int mac1, uint8_t flags, uint8_t report,
 			    size_t len, const void *data)
 {
@@ -439,18 +415,21 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			break;
 
 		case 0x03: { /* Pin request event */
-			unsigned char mac[6];
+			unsigned char pin[6];
 
-			if (vita_get_mac(mac)) {
-				int i;
-				unsigned char pin[6];
+			/*
+			 * When connecting using 1+2, the PIN code is the
+			 * MAC address of the Wiimote backwards.
+			 */
+			pin[0] = (hid_event.mac0 >> 0) & 0xFF;
+			pin[1] = (hid_event.mac0 >> 8) & 0xFF;
+			pin[2] = (hid_event.mac0 >> 16) & 0xFF;
+			pin[3] = (hid_event.mac0 >> 24) & 0xFF;
+			pin[4] = (hid_event.mac1 >> 0) & 0xFF;
+			pin[5] = (hid_event.mac1 >> 8) & 0xFF;
 
-				for (i = 0; i < 6; i++)
-					pin[i] = mac[5 - i];
-
-				ksceBtReplyPinCode(hid_event.mac0, hid_event.mac1,
-					pin, sizeof(pin));
-			}
+			ksceBtReplyPinCode(hid_event.mac0, hid_event.mac1,
+				pin, sizeof(pin));
 
 			break;
 		}
