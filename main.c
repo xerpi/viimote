@@ -6,9 +6,6 @@
 #include <taihen.h>
 #include "log.h"
 
-/* Imported from taiHEN */
-extern int module_get_offset(SceUID pid, SceUID modid, int segidx, size_t offset, uintptr_t *addr);
-
 #define WIIMOTE_VID 0x057E
 #define WIIMOTE_OLD_PID 0x0306
 #define WIIMOTE_NEW_PID 0x0330
