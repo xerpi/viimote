@@ -389,6 +389,15 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			LOG(" %02X", hid_event.data[i]);
 		LOG("\n");
 
+		/*
+		 * If we get an event with a MAC, and the MAC is different
+		 * from the connected Wiimote, skip the event.
+		 */
+		if (wiimote_connected && hid_event.mac0 != 0 && hid_event.mac1 != 0) {
+			if (hid_event.mac0 != wiimote_mac0 || hid_event.mac1 != wiimote_mac1)
+				continue;
+		}
+
 		switch (hid_event.id) {
 		case 0x01: { /* Inquiry result event */
 			unsigned short vid_pid[2];
@@ -406,9 +415,11 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 		}
 
 		case 0x02: /* Inquiry stop event */
-			if (wiimote_mac0 || wiimote_mac1) {
-				ksceBtStartConnect(wiimote_mac0, wiimote_mac1);
+			if (!wiimote_connected) {
+				if (wiimote_mac0 || wiimote_mac1)
+					ksceBtStartConnect(wiimote_mac0, wiimote_mac1);
 			}
+
 			break;
 
 		case 0x03: { /* Pin request event */
@@ -433,6 +444,8 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 		case 0x05: /* Connection accepted event */
 			wiimote_set_led(hid_event.mac0, hid_event.mac1, 1);
+			wiimote_mac0 = hid_event.mac0;
+			wiimote_mac1 = hid_event.mac1;
 			wiimote_connected = 1;
 			break;
 
@@ -443,6 +456,13 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 		case 0x08: /* Connection requested event */
 			/*
 			 * Do nothing since we will get a 0x05 event afterwards.
+			 */
+			break;
+
+		case 0x09: /* Connect request without being paired? event */
+			/*
+			 * The Vita needs to have a pairing with the Wiimote,
+			 * otherwise it won't connect.
 			 */
 			break;
 
