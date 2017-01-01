@@ -2,13 +2,23 @@
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/sysmem.h>
 #include <psp2kern/bt.h>
-#include <psp2/ctrl.h>
+#include <psp2kern/ctrl.h>
 #include <taihen.h>
 #include "log.h"
+
+extern int ksceKernelPowerTick(int);
 
 #define WIIMOTE_VID 0x057E
 #define WIIMOTE_OLD_PID 0x0306
 #define WIIMOTE_NEW_PID 0x0330
+
+#define NUNCHUK_ANALOG_X_MIN 35
+#define NUNCHUK_ANALOG_X_MAX 228
+#define NUNCHUK_ANALOG_X_RANGE (NUNCHUK_ANALOG_X_MAX - NUNCHUK_ANALOG_X_MIN)
+#define NUNCHUK_ANALOG_Y_MIN 27
+#define NUNCHUK_ANALOG_Y_MAX 220
+#define NUNCHUK_ANALOG_Y_RANGE (NUNCHUK_ANALOG_Y_MAX - NUNCHUK_ANALOG_Y_MIN)
+#define NUNCHUK_ANALOG_THRESHOLD 5
 
 /* Grabbed from: https://github.com/abstrakraft/cwiid */
 #define RPT_LED_RUMBLE		0x11
@@ -37,6 +47,8 @@
 #define EXT_BALANCE		0x0402
 #define EXT_MOTIONPLUS		0x0405
 
+#define abs(x) (((x) < 0) ? -(x) : (x))
+
 static SceUID bt_mempool_uid = -1;
 static SceUID bt_thread_uid = -1;
 static SceUID bt_cb_uid = -1;
@@ -62,10 +74,6 @@ static tai_hook_ref_t SceBt_sub_22999C8_ref;
 static SceUID SceBt_sub_22999C8_hook_uid = -1;
 static tai_hook_ref_t SceBt_sub_228C3F0_ref;
 static SceUID SceBt_sub_228C3F0_hook_uid = -1;
-static tai_hook_ref_t SceCtrl_sceCtrlPeekBufferPositive_ref;
-static SceUID SceCtrl_sceCtrlPeekBufferPositive_hook_uid = -1;
-static tai_hook_ref_t SceCtrl_sceCtrlPeekBufferPositive2_ref;
-static SceUID SceCtrl_sceCtrlPeekBufferPositive2_hook_uid = -1;
 
 static inline void wiimote_nunchuk_data_reset(void)
 {
@@ -275,79 +283,78 @@ static int SceBt_sub_228C3F0_hook_func(void *base_ptr)
 	return ret;
 }
 
-static void patch_ctrldata_positive(SceCtrlData *pad_data, int count, unsigned short buttons)
+static void reset_input_emulation()
 {
-	int i;
-	SceCtrlData *upad_data = pad_data;
+	ksceCtrlSetButtonEmulation(0, 0, 0, 0, 32);
+	ksceCtrlSetAnalogEmulation(0, 0, 0x80, 0x80, 0x80, 0x80,
+		0x80, 0x80, 0x80, 0x80, 0);
+}
 
-	for (i = 0; i < count; i++) {
-		SceCtrlData kpad_data;
+static void set_input_emulation()
+{
+	unsigned int buttons = 0;
+	int js_moved = 0;
 
-		ksceKernelMemcpyUserToKernel(&kpad_data, (uintptr_t)upad_data, sizeof(kpad_data));
+	if (wiimote_buttons & (1 << 0))
+		buttons |= SCE_CTRL_LEFT;
+	if (wiimote_buttons & (1 << 1))
+		buttons |= SCE_CTRL_RIGHT;
+	if (wiimote_buttons & (1 << 2))
+		buttons |= SCE_CTRL_DOWN;
+	if (wiimote_buttons & (1 << 3))
+		buttons |= SCE_CTRL_UP;
+	if (wiimote_buttons & (1 << 4))
+		buttons |= SCE_CTRL_START;
+	if (wiimote_buttons & (1 << 8))
+		buttons |= SCE_CTRL_TRIANGLE;
+	if (wiimote_buttons & (1 << 9))
+		buttons |= SCE_CTRL_SQUARE;
+	if (wiimote_buttons & (1 << 10))
+		buttons |= SCE_CTRL_CIRCLE;
+	if (wiimote_buttons & (1 << 11))
+		buttons |= SCE_CTRL_CROSS;
+	if (wiimote_buttons & (1 << 12))
+		buttons |= SCE_CTRL_START;
+	if (wiimote_buttons & (1 << 15))
+		buttons |= SCE_CTRL_INTERCEPTED;
 
-		if (buttons & (1 << 0))
-			kpad_data.buttons |= SCE_CTRL_LEFT;
-		if (buttons & (1 << 1))
-			kpad_data.buttons |= SCE_CTRL_RIGHT;
-		if (buttons & (1 << 2))
-			kpad_data.buttons |= SCE_CTRL_DOWN;
-		if (buttons & (1 << 3))
-			kpad_data.buttons |= SCE_CTRL_UP;
-		if (buttons & (1 << 4))
-			kpad_data.buttons |= SCE_CTRL_START;
-		if (buttons & (1 << 8))
-			kpad_data.buttons |= SCE_CTRL_TRIANGLE;
-		if (buttons & (1 << 9))
-			kpad_data.buttons |= SCE_CTRL_SQUARE;
-		if (buttons & (1 << 10))
-			kpad_data.buttons |= SCE_CTRL_CIRCLE;
-		if (buttons & (1 << 11))
-			kpad_data.buttons |= SCE_CTRL_CROSS;
-		if (buttons & (1 << 12))
-			kpad_data.buttons |= SCE_CTRL_START;
-		if (buttons & (1 << 15))
-			kpad_data.buttons |= SCE_CTRL_INTERCEPTED;
+	if (wiimote_nunchuk_connected) {
+		unsigned char lx;
+		unsigned char ly;
+		unsigned char sx = wiimote_nunchuk_data.sx;
+		unsigned char sy = 255 - wiimote_nunchuk_data.sy;
 
-		if (wiimote_nunchuk_connected) {
-			kpad_data.lx = wiimote_nunchuk_data.sx;
-			kpad_data.ly = 255 - wiimote_nunchuk_data.sy;
+		if (sx > NUNCHUK_ANALOG_X_MAX)
+			lx = 255;
+		else if (sx < NUNCHUK_ANALOG_X_MIN)
+			lx = 0;
+		else
+			lx = ((sx - NUNCHUK_ANALOG_X_MIN) * 255) / NUNCHUK_ANALOG_X_RANGE;
 
-			if (wiimote_nunchuk_data.bz)
-				kpad_data.buttons |= SCE_CTRL_R1;
-			if (wiimote_nunchuk_data.bc)
-				kpad_data.buttons |= SCE_CTRL_L1;
+		if (sy > NUNCHUK_ANALOG_Y_MAX)
+			ly = 255;
+		else if (sx < NUNCHUK_ANALOG_Y_MIN)
+			ly = 0;
+		else
+			ly = ((sy - NUNCHUK_ANALOG_Y_MIN) * 255) / NUNCHUK_ANALOG_Y_RANGE;
+
+		if ((abs((signed char)lx - 128) > NUNCHUK_ANALOG_THRESHOLD) ||
+		    (abs((signed char)ly - 128) > NUNCHUK_ANALOG_THRESHOLD)) {
+			js_moved = 1;
 		}
 
-		ksceKernelMemcpyKernelToUser((uintptr_t)upad_data, &kpad_data, sizeof(kpad_data));
+		if (wiimote_nunchuk_data.bz)
+			buttons |= SCE_CTRL_R1;
+		if (wiimote_nunchuk_data.bc)
+			buttons |= SCE_CTRL_L1;
 
-		upad_data++;
-	}
-}
-
-static int SceCtrl_sceCtrlPeekBufferPositive_hook_func(int port, SceCtrlData *pad_data, int count)
-{
-	int ret;
-
-	ret = TAI_CONTINUE(int, SceCtrl_sceCtrlPeekBufferPositive_ref, port, pad_data, count);
-
-	if (ret >= 0 && wiimote_connected) {
-		patch_ctrldata_positive(pad_data, count, wiimote_buttons);
+		ksceCtrlSetAnalogEmulation(0, 0, lx, ly, 0, 0, 0, 0, 0, 0, 32);
 	}
 
-	return ret;
-}
+	ksceCtrlSetButtonEmulation(0, 0, buttons, buttons, 32);
 
-static int SceCtrl_sceCtrlPeekBufferPositive2_hook_func(int port, SceCtrlData *pad_data, int count)
-{
-	int ret;
-
-	ret = TAI_CONTINUE(int, SceCtrl_sceCtrlPeekBufferPositive2_ref, port, pad_data, count);
-
-	if (ret >= 0 && wiimote_connected) {
-		patch_ctrldata_positive(pad_data, count, wiimote_buttons);
-	}
-
-	return ret;
+	if (buttons != 0 || js_moved)
+		ksceKernelPowerTick(0);
 }
 
 static void enqueue_read_request(unsigned int mac0, unsigned int mac1,
@@ -393,7 +400,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 		 * If we get an event with a MAC, and the MAC is different
 		 * from the connected Wiimote, skip the event.
 		 */
-		if (wiimote_connected && hid_event.mac0 != 0 && hid_event.mac1 != 0) {
+		if (wiimote_connected) {
 			if (hid_event.mac0 != wiimote_mac0 || hid_event.mac1 != wiimote_mac1)
 				continue;
 		}
@@ -451,6 +458,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 		case 0x06: /* Device disconnect event*/
 			wiimote_connected = 0;
+			reset_input_emulation();
 			break;
 
 		case 0x08: /* Connection requested event */
@@ -483,6 +491,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 					}
 				} else {
 					wiimote_nunchuk_connected = 0;
+					reset_input_emulation();
 					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN);
 				}
 
@@ -548,6 +557,8 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			case 0x30: /* Core Buttons */
 				wiimote_buttons = (recv_buff[2] << 8) | recv_buff[1];
 
+				set_input_emulation();
+
 				enqueue_read_request(hid_event.mac0, hid_event.mac1,
 					&hid_request, recv_buff, sizeof(recv_buff));
 
@@ -563,6 +574,8 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 				wiimote_nunchuk_data.az = (recv_buff[7] << 2) | (recv_buff[8] >> 6);
 				wiimote_nunchuk_data.bc = !(recv_buff[8] & 0x2);
 				wiimote_nunchuk_data.bz = !(recv_buff[8] & 0x1);
+
+				set_input_emulation();
 
 				enqueue_read_request(hid_event.mac0, hid_event.mac1,
 					&hid_request, recv_buff, sizeof(recv_buff));
@@ -592,23 +605,24 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 static int viimote_bt_thread(SceSize args, void *argp)
 {
-	bt_cb_uid = ksceKernelCreateCallback("kbluetooth_callback", 0, bt_cb_func, NULL);
+	bt_cb_uid = ksceKernelCreateCallback("viimote_bt_callback", 0, bt_cb_func, NULL);
 	LOG("Bluetooth callback UID: 0x%08X\n", bt_cb_uid);
 
 	TEST_CALL(ksceBtRegisterCallback, bt_cb_uid, 0, 0xFFFFFFFF, 0xFFFFFFFF);
 
-#ifndef RELEASE
+/*#ifndef RELEASE
 	ksceBtStartInquiry();
 	ksceKernelDelayThreadCB(2 * 1000 * 1000);
 	ksceBtStopInquiry();
-#endif
+#endif*/
 
 	while (bt_thread_run) {
 		ksceKernelDelayThreadCB(200 * 1000);
 	}
 
-	if (wiimote_mac0 || wiimote_mac1) {
+	if (wiimote_connected) {
 		ksceBtStartDisconnect(wiimote_mac0, wiimote_mac1);
+		reset_input_emulation();
 	}
 
 	ksceBtUnregisterCallback(bt_cb_uid);
@@ -645,15 +659,6 @@ int module_start(SceSize argc, const void *args)
 		&SceBt_sub_228C3F0_ref, SceBt_modinfo.modid, 0,
 		0x228C3F0 - 0x2280000, 1, SceBt_sub_228C3F0_hook_func);
 
-	/* SceCtrl hooks */
-	SceCtrl_sceCtrlPeekBufferPositive_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
-		&SceCtrl_sceCtrlPeekBufferPositive_ref, "SceCtrl", TAI_ANY_LIBRARY,
-		0xA9C3CED6, SceCtrl_sceCtrlPeekBufferPositive_hook_func);
-
-	SceCtrl_sceCtrlPeekBufferPositive2_hook_uid = taiHookFunctionExportForKernel(KERNEL_PID,
-		&SceCtrl_sceCtrlPeekBufferPositive2_ref, "SceCtrl", TAI_ANY_LIBRARY,
-		0x15F81E8C, SceCtrl_sceCtrlPeekBufferPositive2_hook_func);
-
 	SceKernelMemPoolCreateOpt opt;
 	opt.size = 0x1C;
 	opt.uselock = 0x100;
@@ -663,11 +668,11 @@ int module_start(SceSize argc, const void *args)
 	opt.field_14 = 0;
 	opt.field_18 = 0;
 
-	bt_mempool_uid = ksceKernelMemPoolCreate("viimote_mempool", 0x7000, &opt);
+	bt_mempool_uid = ksceKernelMemPoolCreate("viimote_mempool", 0x100, &opt);
 	LOG("Bluetooth mempool UID: 0x%08X\n", bt_mempool_uid);
 
-	bt_thread_uid = ksceKernelCreateThread("viimote_vt_thread", viimote_bt_thread,
-		0x3C, 0x2000, 0, 0x10000, 0);
+	bt_thread_uid = ksceKernelCreateThread("viimote_bt_thread", viimote_bt_thread,
+		0x3C, 0x1000, 0, 0x10000, 0);
 	LOG("Bluetooth thread UID: 0x%08X\n", bt_thread_uid);
 	ksceKernelStartThread(bt_thread_uid, 0, NULL);
 
@@ -696,25 +701,11 @@ int module_stop(SceSize argc, const void *args)
 	if (SceBt_sub_22999C8_hook_uid > 0) {
 		taiHookReleaseForKernel(SceBt_sub_22999C8_hook_uid,
 			SceBt_sub_22999C8_ref);
-		LOG("Unhooked SceBt_sub_22999C8\n");
 	}
 
 	if (SceBt_sub_228C3F0_hook_uid > 0) {
 		taiHookReleaseForKernel(SceBt_sub_228C3F0_hook_uid,
 			SceBt_sub_228C3F0_ref);
-		LOG("Unhooked SceBt_sub_228C3F0\n");
-	}
-
-	if (SceCtrl_sceCtrlPeekBufferPositive_hook_uid > 0) {
-		taiHookReleaseForKernel(SceCtrl_sceCtrlPeekBufferPositive_hook_uid,
-			SceCtrl_sceCtrlPeekBufferPositive_ref);
-		LOG("Unhooked SceCtrl_sceCtrlPeekBufferPositive\n");
-	}
-
-	if (SceCtrl_sceCtrlPeekBufferPositive2_hook_uid > 0) {
-		taiHookReleaseForKernel(SceCtrl_sceCtrlPeekBufferPositive2_hook_uid,
-			SceCtrl_sceCtrlPeekBufferPositive2_ref);
-		LOG("Unhooked SceCtrl_sceCtrlPeekBufferPositive2\n");
 	}
 
 	log_flush();
