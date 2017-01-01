@@ -20,8 +20,8 @@ extern int ksceKernelPowerTick(int);
 #define NUNCHUK_ANALOG_Y_RANGE		(NUNCHUK_ANALOG_Y_MAX - NUNCHUK_ANALOG_Y_MIN)
 #define NUNCHUK_ANALOG_THRESHOLD	5
 
-#define CLASSIC_ANALOG_R_MAX		63
-#define CLASSIC_ANALOG_L_MAX		31
+#define CLASSIC_ANALOG_L_MAX		63
+#define CLASSIC_ANALOG_R_MAX		31
 #define CLASSIC_TRIGGER_MAX		31
 #define CLASSIC_ANALOG_THRESHOLD	3
 
@@ -447,17 +447,26 @@ static void set_input_emulation()
 			buttons |= SCE_CTRL_DOWN;
 		if (wiimote.classic.buttons & CLASSIC_BTN_UP)
 			buttons |= SCE_CTRL_UP;
+		if (wiimote.classic.buttons & CLASSIC_BTN_R)
+			buttons |= SCE_CTRL_R1;
+		if (wiimote.classic.buttons & CLASSIC_BTN_L)
+			buttons |= SCE_CTRL_L1;
 		if (wiimote.classic.buttons & CLASSIC_BTN_PLUS)
 			buttons |= SCE_CTRL_START;
 		if (wiimote.classic.buttons & CLASSIC_BTN_MINUS)
 			buttons |= SCE_CTRL_SELECT;
+		if (wiimote.classic.buttons & CLASSIC_BTN_ZL)
+			buttons |= SCE_CTRL_VOLDOWN;
+		if (wiimote.classic.buttons & CLASSIC_BTN_ZR)
+			buttons |= SCE_CTRL_VOLUP;
 		if (wiimote.classic.buttons & CLASSIC_BTN_HOME)
 			buttons |= SCE_CTRL_INTERCEPTED;
 
-		unsigned char lx = (wiimote.classic.lx * 255) / CLASSIC_ANALOG_R_MAX;
-		unsigned char ly = (wiimote.classic.ly * 255) / CLASSIC_ANALOG_R_MAX;
-		unsigned char rx = (wiimote.classic.rx * 255) / CLASSIC_ANALOG_L_MAX;
-		unsigned char ry = (wiimote.classic.ry * 255) / CLASSIC_ANALOG_L_MAX;
+
+		unsigned char lx = (wiimote.classic.lx * 255) / CLASSIC_ANALOG_L_MAX;
+		unsigned char ly = ((CLASSIC_ANALOG_L_MAX - wiimote.classic.ly) * 255) / CLASSIC_ANALOG_L_MAX;
+		unsigned char rx = (wiimote.classic.rx * 255) / CLASSIC_ANALOG_R_MAX;
+		unsigned char ry = ((CLASSIC_ANALOG_R_MAX - wiimote.classic.ry) * 255) / CLASSIC_ANALOG_R_MAX;
 
 		if ((abs((signed char)wiimote.classic.lx - 32) > CLASSIC_ANALOG_THRESHOLD) ||
 		    (abs((signed char)wiimote.classic.ly - 32) > CLASSIC_ANALOG_THRESHOLD) ||
@@ -713,13 +722,15 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 				case WIIMOTE_EXT_CLASSIC:
 					wiimote.classic.lx = recv_buff[3] & 0x3F;
 					wiimote.classic.ly = recv_buff[4] & 0x3F;
-					wiimote.classic.rx = (((recv_buff[3] >> 6) & 3) << 3) |
-						(((recv_buff[4] >> 6) & 3) << 1) | ((recv_buff[5] >> 7) & 1);
+					wiimote.classic.rx = (recv_buff[3] & 0xC0) >> 3 |
+							     (recv_buff[4] & 0xC0) >> 5 |
+							     (recv_buff[5] & 0x80) >> 7;
 					wiimote.classic.ry = recv_buff[5] & 0x1F;
-					wiimote.classic.lt = (((recv_buff[5] >> 4) & 3) << 3) |
-						((recv_buff[6] >> 4) & 7);
+					wiimote.classic.lt = (recv_buff[5] & 0x60) >> 2 |
+							     (recv_buff[6] & 0xE0) >> 5;
 					wiimote.classic.rt = recv_buff[6] & 0x1F;
-					wiimote.classic.buttons = (~recv_buff[8] << 8) | ~recv_buff[7];
+					wiimote.classic.buttons = ~(((unsigned short)recv_buff[8] << 8) |
+								    (unsigned short)recv_buff[7]);
 					break;
 
 				default:
