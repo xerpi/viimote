@@ -719,7 +719,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 					wiimote.classic.lt = (((recv_buff[5] >> 4) & 3) << 3) |
 						((recv_buff[6] >> 4) & 7);
 					wiimote.classic.rt = recv_buff[6] & 0x1F;
-					wiimote.classic.buttons = (recv_buff[8] << 8) | recv_buff[7];
+					wiimote.classic.buttons = (~recv_buff[8] << 8) | ~recv_buff[7];
 					break;
 
 				default:
