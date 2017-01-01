@@ -39,6 +39,22 @@ extern int ksceKernelPowerTick(int);
 #define RW_REG			0x04
 #define RW_DECODE		0x00
 
+/* Button flags */
+#define BTN_LEFT		0x0001
+#define BTN_RIGHT		0x0002
+#define BTN_DOWN		0x0004
+#define BTN_UP			0x0008
+#define BTN_PLUS		0x0010
+#define BTN_2			0x0100
+#define BTN_1			0x0200
+#define BTN_B			0x0400
+#define BTN_A			0x0800
+#define BTN_MINUS		0x1000
+#define BTN_HOME		0x8000
+
+#define NUNCHUK_BTN_Z		0x01
+#define NUNCHUK_BTN_C		0x02
+
 /* Extension Values */
 #define EXT_NONE		0x2E2E
 #define EXT_PARTIAL		0xFFFF
@@ -54,36 +70,69 @@ static SceUID bt_thread_uid = -1;
 static SceUID bt_cb_uid = -1;
 static int bt_thread_run = 1;
 
-static int wiimote_connected = 0;
-static unsigned int wiimote_mac0 = 0;
-static unsigned int wiimote_mac1 = 0;
-static unsigned short wiimote_buttons = 0;
-static int wiimote_init_ext_step = 0;
-static int wiimote_nunchuk_connected = 0;
-static struct {
-	unsigned char sx;
-	unsigned char sy;
-	unsigned short ax;
-	unsigned short ay;
-	unsigned short az;
-	unsigned char bc;
-	unsigned char bz;
-} wiimote_nunchuk_data;
+enum wiimote_ext_type {
+	WIIMOTE_EXT_NONE,
+	WIIMOTE_EXT_NUNCHUK,
+	WIIMOTE_EXT_CLASSIC,
+	WIIMOTE_EXT_BALANCE,
+	WIIMOTE_EXT_MOTIONPLUS,
+	WIIMOTE_EXT_UNKNOWN
+};
+
+struct wiimote_info {
+	int connected;
+	unsigned int mac0;
+	unsigned int mac1;
+	int init_ext_step;
+	enum wiimote_ext_type extension;
+	unsigned short buttons;
+
+	union {
+		struct {
+			unsigned char sx;
+			unsigned char sy;
+			unsigned short ax;
+			unsigned short ay;
+			unsigned short az;
+			unsigned char buttons;
+		} nunchuk;
+
+		struct {
+			unsigned short buttons;
+		} classic;
+	};
+};
+
+static struct wiimote_info wiimote;
 
 static tai_hook_ref_t SceBt_sub_22999C8_ref;
 static SceUID SceBt_sub_22999C8_hook_uid = -1;
 static tai_hook_ref_t SceBt_sub_228C3F0_ref;
 static SceUID SceBt_sub_228C3F0_hook_uid = -1;
 
-static inline void wiimote_nunchuk_data_reset(void)
+static inline void wiimote_extension_nunchuk_reset(struct wiimote_info *wiimote)
 {
-	wiimote_nunchuk_data.sx = 1 << 7;
-	wiimote_nunchuk_data.sy = 1 << 7;
-	wiimote_nunchuk_data.ax = 1 << 9;
-	wiimote_nunchuk_data.ay = 1 << 9;
-	wiimote_nunchuk_data.az = 1 << 9;
-	wiimote_nunchuk_data.bc = 1;
-	wiimote_nunchuk_data.bz = 1;
+	wiimote->nunchuk.sx = 1 << 7;
+	wiimote->nunchuk.sy = 1 << 7;
+	wiimote->nunchuk.ax = 1 << 9;
+	wiimote->nunchuk.ay = 1 << 9;
+	wiimote->nunchuk.az = 1 << 9;
+	wiimote->nunchuk.buttons = 0;
+}
+
+static inline void wiimote_extension_classic_reset(struct wiimote_info *wiimote)
+{
+	/*wiimote->classic.sx = 1 << 7;
+	wiimote->classic.sy = 1 << 7;
+	wiimote->classic.ax = 1 << 9;
+	wiimote->classic.ay = 1 << 9;
+	wiimote->classic.az = 1 << 9;*/
+	wiimote->classic.buttons = 0;
+}
+
+static void wiimote_info_reset(struct wiimote_info *wiimote)
+{
+	memset(wiimote, 0, sizeof(*wiimote));
 }
 
 static int is_wiimote(const unsigned short vid_pid[2], const char *name)
@@ -295,34 +344,35 @@ static void set_input_emulation()
 	unsigned int buttons = 0;
 	int js_moved = 0;
 
-	if (wiimote_buttons & (1 << 0))
+	if (wiimote.buttons & BTN_LEFT)
 		buttons |= SCE_CTRL_LEFT;
-	if (wiimote_buttons & (1 << 1))
+	if (wiimote.buttons & BTN_RIGHT)
 		buttons |= SCE_CTRL_RIGHT;
-	if (wiimote_buttons & (1 << 2))
+	if (wiimote.buttons & BTN_DOWN)
 		buttons |= SCE_CTRL_DOWN;
-	if (wiimote_buttons & (1 << 3))
+	if (wiimote.buttons & BTN_UP)
 		buttons |= SCE_CTRL_UP;
-	if (wiimote_buttons & (1 << 4))
+	if (wiimote.buttons & BTN_PLUS)
 		buttons |= SCE_CTRL_START;
-	if (wiimote_buttons & (1 << 8))
+	if (wiimote.buttons & BTN_2)
 		buttons |= SCE_CTRL_TRIANGLE;
-	if (wiimote_buttons & (1 << 9))
+	if (wiimote.buttons & BTN_1)
 		buttons |= SCE_CTRL_SQUARE;
-	if (wiimote_buttons & (1 << 10))
+	if (wiimote.buttons & BTN_B)
 		buttons |= SCE_CTRL_CIRCLE;
-	if (wiimote_buttons & (1 << 11))
+	if (wiimote.buttons & BTN_A)
 		buttons |= SCE_CTRL_CROSS;
-	if (wiimote_buttons & (1 << 12))
-		buttons |= SCE_CTRL_START;
-	if (wiimote_buttons & (1 << 15))
+	if (wiimote.buttons & BTN_MINUS)
+		buttons |= SCE_CTRL_SELECT;
+	if (wiimote.buttons & BTN_HOME)
 		buttons |= SCE_CTRL_INTERCEPTED;
 
-	if (wiimote_nunchuk_connected) {
+	switch (wiimote.extension) {
+	case WIIMOTE_EXT_NUNCHUK: {
 		unsigned char lx;
 		unsigned char ly;
-		unsigned char sx = wiimote_nunchuk_data.sx;
-		unsigned char sy = 255 - wiimote_nunchuk_data.sy;
+		unsigned char sx = wiimote.nunchuk.sx;
+		unsigned char sy = 255 - wiimote.nunchuk.sy;
 
 		if (sx > NUNCHUK_ANALOG_X_MAX)
 			lx = 255;
@@ -343,12 +393,23 @@ static void set_input_emulation()
 			js_moved = 1;
 		}
 
-		if (wiimote_nunchuk_data.bz)
+		if (wiimote.nunchuk.buttons & NUNCHUK_BTN_Z)
 			buttons |= SCE_CTRL_R1;
-		if (wiimote_nunchuk_data.bc)
+		if (wiimote.nunchuk.buttons & NUNCHUK_BTN_C)
 			buttons |= SCE_CTRL_L1;
 
 		ksceCtrlSetAnalogEmulation(0, 0, lx, ly, 0, 0, 0, 0, 0, 0, 32);
+		break;
+	}
+
+	case WIIMOTE_EXT_CLASSIC: {
+
+
+		break;
+	}
+
+	default:
+		break;
 	}
 
 	ksceCtrlSetButtonEmulation(0, 0, buttons, buttons, 32);
@@ -400,8 +461,8 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 		 * If we get an event with a MAC, and the MAC is different
 		 * from the connected Wiimote, skip the event.
 		 */
-		if (wiimote_connected) {
-			if (hid_event.mac0 != wiimote_mac0 || hid_event.mac1 != wiimote_mac1)
+		if (wiimote.connected) {
+			if (hid_event.mac0 != wiimote.mac0 || hid_event.mac1 != wiimote.mac1)
 				continue;
 		}
 
@@ -415,16 +476,16 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 			if (is_wiimote(vid_pid, name)) {
 				ksceBtStopInquiry();
-				wiimote_mac0 = hid_event.mac0;
-				wiimote_mac1 = hid_event.mac1;
+				wiimote.mac0 = hid_event.mac0;
+				wiimote.mac1 = hid_event.mac1;
 			}
 			break;
 		}
 
 		case 0x02: /* Inquiry stop event */
-			if (!wiimote_connected) {
-				if (wiimote_mac0 || wiimote_mac1)
-					ksceBtStartConnect(wiimote_mac0, wiimote_mac1);
+			if (!wiimote.connected) {
+				if (wiimote.mac0 || wiimote.mac1)
+					ksceBtStartConnect(wiimote.mac0, wiimote.mac1);
 			}
 
 			break;
@@ -451,13 +512,14 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 		case 0x05: /* Connection accepted event */
 			wiimote_set_led(hid_event.mac0, hid_event.mac1, 1);
-			wiimote_mac0 = hid_event.mac0;
-			wiimote_mac1 = hid_event.mac1;
-			wiimote_connected = 1;
+			wiimote.mac0 = hid_event.mac0;
+			wiimote.mac1 = hid_event.mac1;
+			wiimote.extension = WIIMOTE_EXT_NONE;
+			wiimote.connected = 1;
 			break;
 
 		case 0x06: /* Device disconnect event*/
-			wiimote_connected = 0;
+			wiimote.connected = 0;
 			reset_input_emulation();
 			break;
 
@@ -490,7 +552,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 						break;
 					}
 				} else {
-					wiimote_nunchuk_connected = 0;
+					wiimote.extension = WIIMOTE_EXT_NONE;
 					reset_input_emulation();
 					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN);
 				}
@@ -501,14 +563,23 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 				switch ((recv_buff[6] << 8) | recv_buff[7]) {
 				case EXT_NONE:
 					LOG("No extension\n");
+					wiimote.extension = WIIMOTE_EXT_NONE;
 					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN);
 					break;
 				case EXT_NUNCHUK:
 					LOG("Nunchuk extension\n");
-					wiimote_nunchuk_data_reset();
-					wiimote_nunchuk_connected = 1;
+					wiimote_extension_nunchuk_reset(&wiimote);
+					wiimote.extension = WIIMOTE_EXT_NUNCHUK;
 					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN_EXT8);
 					break;
+
+				case EXT_CLASSIC:
+					LOG("Classic controller extension\n");
+					wiimote_extension_classic_reset(&wiimote);
+					wiimote.extension = WIIMOTE_EXT_CLASSIC;
+					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN_EXT8);
+					break;
+
 				case EXT_PARTIAL: {
 					LOG("Partial extension\n");
 					unsigned char buf[1];
@@ -520,7 +591,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 						break;
 					}
 
-					wiimote_init_ext_step = 1;
+					wiimote.init_ext_step = 1;
 
 					break;
 				}
@@ -533,7 +604,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 				break;
 
 			case 0x22: /* Acknowledge output report, return function result */
-				if (wiimote_init_ext_step == 1) {
+				if (wiimote.init_ext_step == 1) {
 					unsigned char buf[1];
 
 					buf[0] = 0x00;
@@ -542,20 +613,20 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 						break;
 					}
 
-					wiimote_init_ext_step = 2;
-				} else if (wiimote_init_ext_step == 2) {
+					wiimote.init_ext_step = 2;
+				} else if (wiimote.init_ext_step == 2) {
 					/* Read extension ID */
 					if (wiimote_request_mem_data_read(hid_event.mac0, hid_event.mac1, RW_REG, 0xA400FE, 2)) {
 						LOG("Read error (extension error)\n");
 						break;
 					}
 
-					wiimote_init_ext_step = 0;
+					wiimote.init_ext_step = 0;
 				}
 				break;
 
 			case 0x30: /* Core Buttons */
-				wiimote_buttons = (recv_buff[2] << 8) | recv_buff[1];
+				wiimote.buttons = (recv_buff[2] << 8) | recv_buff[1];
 
 				set_input_emulation();
 
@@ -565,15 +636,24 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 				break;
 
 			case 0x32: /* Core Buttons with 8 Extension bytes */
-				wiimote_buttons = (recv_buff[2] << 8) | recv_buff[1];
+				wiimote.buttons = (recv_buff[2] << 8) | recv_buff[1];
 
-				wiimote_nunchuk_data.sx = recv_buff[3];
-				wiimote_nunchuk_data.sy = recv_buff[4];
-				wiimote_nunchuk_data.ax = (recv_buff[5] << 2) | (recv_buff[8] >> 2);
-				wiimote_nunchuk_data.ay = (recv_buff[6] << 2) | (recv_buff[8] >> 4);
-				wiimote_nunchuk_data.az = (recv_buff[7] << 2) | (recv_buff[8] >> 6);
-				wiimote_nunchuk_data.bc = !(recv_buff[8] & 0x2);
-				wiimote_nunchuk_data.bz = !(recv_buff[8] & 0x1);
+				switch (wiimote.extension) {
+				case WIIMOTE_EXT_NUNCHUK:
+					wiimote.nunchuk.sx = recv_buff[3];
+					wiimote.nunchuk.sy = recv_buff[4];
+					wiimote.nunchuk.ax = (recv_buff[5] << 2) | (recv_buff[8] >> 2);
+					wiimote.nunchuk.ay = (recv_buff[6] << 2) | (recv_buff[8] >> 4);
+					wiimote.nunchuk.az = (recv_buff[7] << 2) | (recv_buff[8] >> 6);
+					wiimote.nunchuk.buttons = ~recv_buff[8] & 3;
+					break;
+
+				case WIIMOTE_EXT_CLASSIC:
+					break;
+
+				default:
+					break;
+				}
 
 				set_input_emulation();
 
@@ -606,9 +686,10 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 static int viimote_bt_thread(SceSize args, void *argp)
 {
 	bt_cb_uid = ksceKernelCreateCallback("viimote_bt_callback", 0, bt_cb_func, NULL);
-	LOG("Bluetooth callback UID: 0x%08X\n", bt_cb_uid);
 
-	TEST_CALL(ksceBtRegisterCallback, bt_cb_uid, 0, 0xFFFFFFFF, 0xFFFFFFFF);
+	wiimote_info_reset(&wiimote);
+
+	ksceBtRegisterCallback(bt_cb_uid, 0, 0xFFFFFFFF, 0xFFFFFFFF);
 
 /*#ifndef RELEASE
 	ksceBtStartInquiry();
@@ -620,8 +701,9 @@ static int viimote_bt_thread(SceSize args, void *argp)
 		ksceKernelDelayThreadCB(200 * 1000);
 	}
 
-	if (wiimote_connected) {
-		ksceBtStartDisconnect(wiimote_mac0, wiimote_mac1);
+	if (wiimote.connected) {
+		ksceBtStartDisconnect(wiimote.mac0, wiimote.mac1);
+		wiimote_info_reset(&wiimote);
 		reset_input_emulation();
 	}
 
