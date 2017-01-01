@@ -8,17 +8,22 @@
 
 extern int ksceKernelPowerTick(int);
 
-#define WIIMOTE_VID 0x057E
-#define WIIMOTE_OLD_PID 0x0306
-#define WIIMOTE_NEW_PID 0x0330
+#define WIIMOTE_VID	0x057E
+#define WIIMOTE_OLD_PID	0x0306
+#define WIIMOTE_NEW_PID	0x0330
 
-#define NUNCHUK_ANALOG_X_MIN 35
-#define NUNCHUK_ANALOG_X_MAX 228
-#define NUNCHUK_ANALOG_X_RANGE (NUNCHUK_ANALOG_X_MAX - NUNCHUK_ANALOG_X_MIN)
-#define NUNCHUK_ANALOG_Y_MIN 27
-#define NUNCHUK_ANALOG_Y_MAX 220
-#define NUNCHUK_ANALOG_Y_RANGE (NUNCHUK_ANALOG_Y_MAX - NUNCHUK_ANALOG_Y_MIN)
-#define NUNCHUK_ANALOG_THRESHOLD 5
+#define NUNCHUK_ANALOG_X_MIN		35
+#define NUNCHUK_ANALOG_X_MAX		228
+#define NUNCHUK_ANALOG_X_RANGE		(NUNCHUK_ANALOG_X_MAX - NUNCHUK_ANALOG_X_MIN)
+#define NUNCHUK_ANALOG_Y_MIN		27
+#define NUNCHUK_ANALOG_Y_MAX		220
+#define NUNCHUK_ANALOG_Y_RANGE		(NUNCHUK_ANALOG_Y_MAX - NUNCHUK_ANALOG_Y_MIN)
+#define NUNCHUK_ANALOG_THRESHOLD	5
+
+#define CLASSIC_ANALOG_R_MAX		63
+#define CLASSIC_ANALOG_L_MAX		31
+#define CLASSIC_TRIGGER_MAX		31
+#define CLASSIC_ANALOG_THRESHOLD	3
 
 /* Grabbed from: https://github.com/abstrakraft/cwiid */
 #define RPT_LED_RUMBLE		0x11
@@ -54,6 +59,22 @@ extern int ksceKernelPowerTick(int);
 
 #define NUNCHUK_BTN_Z		0x01
 #define NUNCHUK_BTN_C		0x02
+
+#define CLASSIC_BTN_R		0x0002
+#define CLASSIC_BTN_PLUS	0x0004
+#define CLASSIC_BTN_HOME	0x0008
+#define CLASSIC_BTN_MINUS	0x0010
+#define CLASSIC_BTN_L		0x0020
+#define CLASSIC_BTN_DOWN	0x0040
+#define CLASSIC_BTN_RIGHT	0x0080
+#define CLASSIC_BTN_UP		0x0100
+#define CLASSIC_BTN_LEFT	0x0200
+#define CLASSIC_BTN_ZR		0x0400
+#define CLASSIC_BTN_X		0x0800
+#define CLASSIC_BTN_A		0x1000
+#define CLASSIC_BTN_Y		0x2000
+#define CLASSIC_BTN_B		0x4000
+#define CLASSIC_BTN_ZL		0x8000
 
 /* Extension Values */
 #define EXT_NONE		0x2E2E
@@ -98,6 +119,12 @@ struct wiimote_info {
 		} nunchuk;
 
 		struct {
+			unsigned char lx;
+			unsigned char ly;
+			unsigned char rx;
+			unsigned char ry;
+			unsigned char lt;
+			unsigned char rt;
 			unsigned short buttons;
 		} classic;
 	};
@@ -122,11 +149,12 @@ static inline void wiimote_extension_nunchuk_reset(struct wiimote_info *wiimote)
 
 static inline void wiimote_extension_classic_reset(struct wiimote_info *wiimote)
 {
-	/*wiimote->classic.sx = 1 << 7;
-	wiimote->classic.sy = 1 << 7;
-	wiimote->classic.ax = 1 << 9;
-	wiimote->classic.ay = 1 << 9;
-	wiimote->classic.az = 1 << 9;*/
+	wiimote->classic.lx = 1 << 5;
+	wiimote->classic.ly = 1 << 5;
+	wiimote->classic.rx = 1 << 4;
+	wiimote->classic.ry = 1 << 4;
+	wiimote->classic.lt = 1 << 4;
+	wiimote->classic.rt = 1 << 4;
 	wiimote->classic.buttons = 0;
 }
 
@@ -403,8 +431,42 @@ static void set_input_emulation()
 	}
 
 	case WIIMOTE_EXT_CLASSIC: {
+		if (wiimote.classic.buttons & CLASSIC_BTN_A)
+			buttons |= SCE_CTRL_CROSS;
+		if (wiimote.classic.buttons & CLASSIC_BTN_B)
+			buttons |= SCE_CTRL_CIRCLE;
+		if (wiimote.classic.buttons & CLASSIC_BTN_X)
+			buttons |= SCE_CTRL_TRIANGLE;
+		if (wiimote.classic.buttons & CLASSIC_BTN_Y)
+			buttons |= SCE_CTRL_SQUARE;
+		if (wiimote.classic.buttons & CLASSIC_BTN_LEFT)
+			buttons |= SCE_CTRL_LEFT;
+		if (wiimote.classic.buttons & CLASSIC_BTN_RIGHT)
+			buttons |= SCE_CTRL_RIGHT;
+		if (wiimote.classic.buttons & CLASSIC_BTN_DOWN)
+			buttons |= SCE_CTRL_DOWN;
+		if (wiimote.classic.buttons & CLASSIC_BTN_UP)
+			buttons |= SCE_CTRL_UP;
+		if (wiimote.classic.buttons & CLASSIC_BTN_PLUS)
+			buttons |= SCE_CTRL_START;
+		if (wiimote.classic.buttons & CLASSIC_BTN_MINUS)
+			buttons |= SCE_CTRL_SELECT;
+		if (wiimote.classic.buttons & CLASSIC_BTN_HOME)
+			buttons |= SCE_CTRL_INTERCEPTED;
 
+		unsigned char lx = (wiimote.classic.lx * 255) / CLASSIC_ANALOG_R_MAX;
+		unsigned char ly = (wiimote.classic.ly * 255) / CLASSIC_ANALOG_R_MAX;
+		unsigned char rx = (wiimote.classic.rx * 255) / CLASSIC_ANALOG_L_MAX;
+		unsigned char ry = (wiimote.classic.ry * 255) / CLASSIC_ANALOG_L_MAX;
 
+		if ((abs((signed char)wiimote.classic.lx - 32) > CLASSIC_ANALOG_THRESHOLD) ||
+		    (abs((signed char)wiimote.classic.ly - 32) > CLASSIC_ANALOG_THRESHOLD) ||
+		    (abs((signed char)wiimote.classic.rx - 16) > CLASSIC_ANALOG_THRESHOLD) ||
+		    (abs((signed char)wiimote.classic.ry - 16) > CLASSIC_ANALOG_THRESHOLD)) {
+			js_moved = 1;
+		}
+
+		ksceCtrlSetAnalogEmulation(0, 0, lx, ly, rx, ry, 0, 0, 0, 0, 32);
 		break;
 	}
 
@@ -649,6 +711,15 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 					break;
 
 				case WIIMOTE_EXT_CLASSIC:
+					wiimote.classic.lx = recv_buff[3] & 0x3F;
+					wiimote.classic.ly = recv_buff[4] & 0x3F;
+					wiimote.classic.rx = (((recv_buff[3] >> 6) & 3) << 3) |
+						(((recv_buff[4] >> 6) & 3) << 1) | ((recv_buff[5] >> 7) & 1);
+					wiimote.classic.ry = recv_buff[5] & 0x1F;
+					wiimote.classic.lt = (((recv_buff[5] >> 4) & 3) << 3) |
+						((recv_buff[6] >> 4) & 7);
+					wiimote.classic.rt = recv_buff[6] & 0x1F;
+					wiimote.classic.buttons = (recv_buff[8] << 8) | recv_buff[7];
 					break;
 
 				default:
