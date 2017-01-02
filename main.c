@@ -426,7 +426,7 @@ static void set_input_emulation()
 		if (wiimote.nunchuk.buttons & NUNCHUK_BTN_C)
 			buttons |= SCE_CTRL_L1;
 
-		ksceCtrlSetAnalogEmulation(0, 0, lx, ly, 0x80, 0x80, 0x80, 0x80, 0x80, 0x80, 32);
+		ksceCtrlSetAnalogEmulation(0, 0, lx, ly, 0x80, 0x80, lx, ly, 0x80, 0x80, 32);
 		break;
 	}
 
@@ -475,7 +475,7 @@ static void set_input_emulation()
 			js_moved = 1;
 		}
 
-		ksceCtrlSetAnalogEmulation(0, 0, lx, ly, rx, ry, 0x80, 0x80, 0x80, 0x80, 32);
+		ksceCtrlSetAnalogEmulation(0, 0, lx, ly, rx, ry, lx, ly, rx, ry, 32);
 		break;
 	}
 
