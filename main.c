@@ -8,6 +8,8 @@
 
 extern int ksceKernelPowerTick(int);
 
+#define abs(x) (((x) < 0) ? -(x) : (x))
+
 #define WIIMOTE_VID	0x057E
 #define WIIMOTE_OLD_PID	0x0306
 #define WIIMOTE_NEW_PID	0x0330
@@ -84,12 +86,7 @@ extern int ksceKernelPowerTick(int);
 #define EXT_BALANCE		0x0402
 #define EXT_MOTIONPLUS		0x0405
 
-#define abs(x) (((x) < 0) ? -(x) : (x))
-
-static SceUID bt_mempool_uid = -1;
-static SceUID bt_thread_uid = -1;
-static SceUID bt_cb_uid = -1;
-static int bt_thread_run = 1;
+#define REQ_LIST_DEFAULT_SIZE 5
 
 enum wiimote_ext_type {
 	WIIMOTE_EXT_NONE,
@@ -130,6 +127,17 @@ struct wiimote_info {
 		} classic;
 	};
 };
+
+static SceUID bt_mempool_uid = -1;
+static SceUID bt_thread_uid = -1;
+static SceUID bt_cb_uid = -1;
+static int bt_thread_run = 1;
+
+static SceBtHidRequest *req_list = NULL;
+static unsigned int req_list_size;
+static unsigned int req_list_used;
+static unsigned int req_list_head;
+static unsigned int req_list_tail;
 
 static struct wiimote_info wiimote;
 
@@ -189,36 +197,52 @@ static inline void mempool_free(void *ptr)
 	ksceKernelMemPoolFree(bt_mempool_uid, ptr);
 }
 
+static SceBtHidRequest *req_list_alloc_tail(unsigned int buffer_size)
+{
+	SceBtHidRequest *req = NULL;
+
+	if (req_list_used < req_list_size) {
+		req = &req_list[req_list_tail];
+		req_list_tail = (req_list_tail + 1) % req_list_size;
+		req_list_used++;
+
+		memset(req, 0, sizeof(*req));
+		req->buffer = mempool_alloc(buffer_size);
+		req->length = buffer_size;
+		req->next = req;
+	}
+
+	return req;
+}
+
+static void req_list_free_head()
+{
+	if (req_list_used > 0) {
+		SceBtHidRequest *req = &req_list[req_list_head];
+		req_list_head = (req_list_head + 1) % req_list_size;
+		req_list_used--;
+
+		if (req->buffer)
+			mempool_free(req->buffer);
+	}
+}
+
 static int wiimote_send_rpt(unsigned int mac0, unsigned int mac1, uint8_t flags, uint8_t report,
 			    size_t len, const void *data)
 {
 	SceBtHidRequest *req;
-	unsigned char *buf;
 
-	req = mempool_alloc(sizeof(*req));
-	if (!req) {
-		LOG("Error allocatin BT HID Request\n");
+	if ((req = req_list_alloc_tail(len + 1)) == NULL) {
+		LOG("Memory allocation error (bt request)\n");
 		return -1;
 	}
 
-	if ((buf = mempool_alloc((len + 1) * sizeof(*buf))) == NULL) {
-		LOG("Memory allocation error (mesg array)\n");
-		return -1;
-	}
+	((unsigned char *)req->buffer)[0] = report;
+	memcpy(req->buffer + 1, data, len);
 
-	buf[0] = report;
-	memcpy(buf + 1, data, len);
-
-	memset(req, 0, sizeof(*req));
 	req->type = 1; // 0xA2 -> type = 1
-	req->buffer = buf;
-	req->length = len + 1;
-	req->next = req;
 
 	ksceBtHidTransfer(mac0, mac1, req);
-
-	mempool_free(buf);
-	mempool_free(req);
 
 	return 0;
 }
@@ -595,6 +619,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 				wiimote.mac1 = hid_event.mac1;
 				wiimote.extension = WIIMOTE_EXT_NONE;
 				wiimote.connected = 1;
+				wiimote_set_led(wiimote.mac0, wiimote.mac1, 1);
 				wiimote_request_status(wiimote.mac0, wiimote.mac1);
 			}
 
@@ -767,10 +792,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 			//LOG("Wiimote 0x0B event: 0x%02X\n", recv_buff[0]);
 
-			if (wiimote.led == 0) {
-				wiimote.led = 1;
-				wiimote_set_led(hid_event.mac0, hid_event.mac1, wiimote.led);
-			}
+			req_list_free_head();
 
 			enqueue_read_request(hid_event.mac0, hid_event.mac1,
 				&hid_request, recv_buff, sizeof(recv_buff));
@@ -849,8 +871,14 @@ int module_start(SceSize argc, const void *args)
 	opt.field_14 = 0;
 	opt.field_18 = 0;
 
-	bt_mempool_uid = ksceKernelMemPoolCreate("viimote_mempool", 0x100, &opt);
+	bt_mempool_uid = ksceKernelMemPoolCreate("viimote_mempool", 0x400, &opt);
 	LOG("Bluetooth mempool UID: 0x%08X\n", bt_mempool_uid);
+
+	req_list = mempool_alloc(REQ_LIST_DEFAULT_SIZE * sizeof(SceBtHidRequest));
+	req_list_used = 0;
+	req_list_head = 0;
+	req_list_tail = 0;
+	req_list_size = REQ_LIST_DEFAULT_SIZE;
 
 	bt_thread_uid = ksceKernelCreateThread("viimote_bt_thread", viimote_bt_thread,
 		0x3C, 0x1000, 0, 0x10000, 0);
@@ -873,6 +901,10 @@ int module_stop(SceSize argc, const void *args)
 		bt_thread_run = 0;
 		ksceKernelWaitThreadEnd(bt_thread_uid, NULL, &timeout);
 		ksceKernelDeleteThread(bt_thread_uid);
+	}
+
+	if (req_list != NULL) {
+		mempool_free(req_list);
 	}
 
 	if (bt_mempool_uid > 0) {
