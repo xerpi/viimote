@@ -104,6 +104,7 @@ struct wiimote_info {
 	int connected;
 	unsigned int mac0;
 	unsigned int mac1;
+	int led;
 	int init_ext_step;
 	enum wiimote_ext_type extension;
 	unsigned short buttons;
@@ -238,7 +239,7 @@ static int wiimote_request_status(unsigned int mac0, unsigned int mac1)
 static int wiimote_set_rpt_type(unsigned int mac0, unsigned int mac1, uint8_t rpt_type)
 {
 	unsigned char buf[RPT_MODE_BUF_LEN];
-	const int continuous = 0;
+	const int continuous = 1;
 
 	buf[0] = continuous ? 0x04 : 0;
 	buf[1] = rpt_type;
@@ -589,11 +590,12 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			ksceBtGetDeviceName(hid_event.mac0, hid_event.mac1, name);
 
 			if (is_wiimote(vid_pid, name)) {
+				wiimote_info_reset(&wiimote);
 				wiimote.mac0 = hid_event.mac0;
 				wiimote.mac1 = hid_event.mac1;
 				wiimote.extension = WIIMOTE_EXT_NONE;
 				wiimote.connected = 1;
-				wiimote_set_led(hid_event.mac0, hid_event.mac1, 1);
+				wiimote_request_status(wiimote.mac0, wiimote.mac1);
 			}
 
 			break;
@@ -764,6 +766,11 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 		case 0x0B: /* HID reply to 1-type request */
 
 			//LOG("Wiimote 0x0B event: 0x%02X\n", recv_buff[0]);
+
+			if (wiimote.led == 0) {
+				wiimote.led = 1;
+				wiimote_set_led(hid_event.mac0, hid_event.mac1, wiimote.led);
+			}
 
 			enqueue_read_request(hid_event.mac0, hid_event.mac1,
 				&hid_request, recv_buff, sizeof(recv_buff));
