@@ -581,13 +581,23 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 			break;
 		}
 
-		case 0x05: /* Connection accepted event */
-			wiimote_set_led(hid_event.mac0, hid_event.mac1, 1);
-			wiimote.mac0 = hid_event.mac0;
-			wiimote.mac1 = hid_event.mac1;
-			wiimote.extension = WIIMOTE_EXT_NONE;
-			wiimote.connected = 1;
+		case 0x05: { /* Connection accepted event */
+			unsigned short vid_pid[2];
+			char name[0x79];
+
+			ksceBtGetVidPid(hid_event.mac0, hid_event.mac1, vid_pid);
+			ksceBtGetDeviceName(hid_event.mac0, hid_event.mac1, name);
+
+			if (is_wiimote(vid_pid, name)) {
+				wiimote.mac0 = hid_event.mac0;
+				wiimote.mac1 = hid_event.mac1;
+				wiimote.extension = WIIMOTE_EXT_NONE;
+				wiimote.connected = 1;
+				wiimote_set_led(hid_event.mac0, hid_event.mac1, 1);
+			}
+
 			break;
+		}
 
 		case 0x06: /* Device disconnect event*/
 			wiimote.connected = 0;
