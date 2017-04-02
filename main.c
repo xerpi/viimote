@@ -1,12 +1,11 @@
 #include <psp2kern/kernel/modulemgr.h>
 #include <psp2kern/kernel/threadmgr.h>
 #include <psp2kern/kernel/sysmem.h>
+#include <psp2kern/kernel/suspend.h>
 #include <psp2kern/bt.h>
 #include <psp2kern/ctrl.h>
 #include <taihen.h>
 #include "log.h"
-
-extern int ksceKernelPowerTick(int);
 
 #define abs(x) (((x) < 0) ? -(x) : (x))
 
@@ -189,12 +188,12 @@ static int is_wiimote(const unsigned short vid_pid[2], const char *name)
 
 static inline void *mempool_alloc(unsigned int size)
 {
-	return ksceKernelMemPoolAlloc(bt_mempool_uid, size);
+	return ksceKernelAllocHeapMemory(bt_mempool_uid, size);
 }
 
 static inline void mempool_free(void *ptr)
 {
-	ksceKernelMemPoolFree(bt_mempool_uid, ptr);
+	ksceKernelFreeHeapMemory(bt_mempool_uid, ptr);
 }
 
 static SceBtHidRequest *req_list_alloc_tail(unsigned int buffer_size)
@@ -862,7 +861,7 @@ int module_start(SceSize argc, const void *args)
 		&SceBt_sub_228C3F0_ref, SceBt_modinfo.modid, 0,
 		0x228C3F0 - 0x2280000, 1, SceBt_sub_228C3F0_hook_func);
 
-	SceKernelMemPoolCreateOpt opt;
+	SceKernelHeapCreateOpt opt;
 	opt.size = 0x1C;
 	opt.uselock = 0x100;
 	opt.field_8 = 0x10000;
@@ -871,7 +870,7 @@ int module_start(SceSize argc, const void *args)
 	opt.field_14 = 0;
 	opt.field_18 = 0;
 
-	bt_mempool_uid = ksceKernelMemPoolCreate("viimote_mempool", 0x400, &opt);
+	bt_mempool_uid = ksceKernelCreateHeap("viimote_mempool", 0x400, &opt);
 	LOG("Bluetooth mempool UID: 0x%08X\n", bt_mempool_uid);
 
 	req_list = mempool_alloc(REQ_LIST_DEFAULT_SIZE * sizeof(SceBtHidRequest));
@@ -908,7 +907,7 @@ int module_stop(SceSize argc, const void *args)
 	}
 
 	if (bt_mempool_uid > 0) {
-		ksceKernelMemPoolDestroy(bt_mempool_uid);
+		ksceKernelDeleteHeap(bt_mempool_uid);
 	}
 
 	if (SceBt_sub_22999C8_hook_uid > 0) {
