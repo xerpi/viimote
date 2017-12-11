@@ -77,6 +77,12 @@
 #define CLASSIC_BTN_B		0x4000
 #define CLASSIC_BTN_ZL		0x8000
 
+/* DRUM Button flags */
+#define DRUM_BTN_RR		0x0008
+#define DRUM_BTN_CR		0x0010
+#define DRUM_BTN_RL		0x0020
+#define DRUM_BTN_CL		0x0040
+
 /* Extension Values */
 #define EXT_NONE		0x2E2E
 #define EXT_PARTIAL		0xFFFF
@@ -84,6 +90,7 @@
 #define EXT_CLASSIC		0x0101
 #define EXT_BALANCE		0x0402
 #define EXT_MOTIONPLUS		0x0405
+#define EXT_DRUM		0x0111	//Add for taiko drum
 
 #define REQ_LIST_DEFAULT_SIZE 5
 
@@ -93,6 +100,7 @@ enum wiimote_ext_type {
 	WIIMOTE_EXT_CLASSIC,
 	WIIMOTE_EXT_BALANCE,
 	WIIMOTE_EXT_MOTIONPLUS,
+	WIIMOTE_EXT_DRUM,	//Add for taiko drum
 	WIIMOTE_EXT_UNKNOWN
 };
 
@@ -124,6 +132,10 @@ struct wiimote_info {
 			unsigned char rt;
 			unsigned short buttons;
 		} classic;
+
+		struct {
+			unsigned short buttons;
+		} drum; //Add for taiko drum
 	};
 };
 
@@ -164,6 +176,11 @@ static inline void wiimote_extension_classic_reset(struct wiimote_info *wiimote)
 	wiimote->classic.lt = 1 << 4;
 	wiimote->classic.rt = 1 << 4;
 	wiimote->classic.buttons = 0;
+}
+/*Add for taiko drum*/
+static inline void wiimote_extension_drum_reset(struct wiimote_info *wiimote)
+{
+	wiimote->drum.buttons = 0;
 }
 
 static void wiimote_info_reset(struct wiimote_info *wiimote)
@@ -503,6 +520,22 @@ static void set_input_emulation()
 		break;
 	}
 
+	/*Add for taiko drum*/
+	case WIIMOTE_EXT_DRUM: {
+		if (wiimote.drum.buttons & DRUM_BTN_CL)
+			buttons |= SCE_CTRL_LEFT;
+		if (wiimote.drum.buttons & DRUM_BTN_RL)
+			buttons |= SCE_CTRL_L1;
+		if (wiimote.drum.buttons & DRUM_BTN_CR)
+			buttons |= SCE_CTRL_CIRCLE;
+		if (wiimote.drum.buttons & DRUM_BTN_RR)
+			buttons |= SCE_CTRL_R1;
+
+		//ksceCtrlSetAnalogEmulation(0, 0, lx, ly, 0x80, 0x80, lx, ly, 0x80, 0x80, 32);
+		//ksceCtrlSetAnalogEmulation(0, 0, lx, ly, rx, ry, lx, ly, rx, ry, 32);
+		break;
+	}
+
 	default:
 		break;
 	}
@@ -549,7 +582,7 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 
 		LOG("->Event:");
 		for (int i = 0; i < 0x10; i++)
-			LOG(" %02X", hid_event.data[i]);
+			LOG(" %02X",   hid_event.data[i]);
 		LOG("\n");
 
 		/*
@@ -687,6 +720,13 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN_EXT8);
 					break;
 
+				case EXT_DRUM:
+					LOG("TaTaCon Drum controller extension\n");
+					wiimote_extension_drum_reset(&wiimote);
+					wiimote.extension = WIIMOTE_EXT_DRUM;
+					wiimote_set_rpt_type(hid_event.mac0, hid_event.mac1, RPT_BTN_EXT8);
+					break;
+
 				case EXT_PARTIAL: {
 					LOG("Partial extension\n");
 					unsigned char buf[1];
@@ -767,6 +807,10 @@ static int bt_cb_func(int notifyId, int notifyCount, int notifyArg, void *common
 					wiimote.classic.rt = recv_buff[6] & 0x1F;
 					wiimote.classic.buttons = ~(((unsigned short)recv_buff[8] << 8) |
 								    (unsigned short)recv_buff[7]);
+					break;
+
+				case WIIMOTE_EXT_DRUM:
+					wiimote.drum.buttons = ~recv_buff[8];
 					break;
 
 				default:
