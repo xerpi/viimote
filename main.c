@@ -8,20 +8,20 @@
 #include "log.h"
 
 #define abs(x) (((x) < 0) ? -(x) : (x))
+#define clamp(x, min, max) (((x) < (min)) ? (min) : ((x) > (max) ? (max) : (x)))
+#define interpolate(x, x0, x1, y0, y1) ((y0) + (((x) - (x0)) * ((y1) - (y0))) / ((x1) - (x0)))
 
 #define WIIMOTE_VID	0x057E
 #define WIIMOTE_OLD_PID	0x0306
 #define WIIMOTE_NEW_PID	0x0330
 
-#define NUNCHUK_ANALOG_X_MIN		35
-#define NUNCHUK_ANALOG_X_MAX		228
-#define NUNCHUK_ANALOG_X_RANGE		(NUNCHUK_ANALOG_X_MAX - NUNCHUK_ANALOG_X_MIN)
-#define NUNCHUK_ANALOG_Y_MIN		27
-#define NUNCHUK_ANALOG_Y_MAX		220
-#define NUNCHUK_ANALOG_Y_RANGE		(NUNCHUK_ANALOG_Y_MAX - NUNCHUK_ANALOG_Y_MIN)
+#define NUNCHUK_ANALOG_MIN		35
+#define NUNCHUK_ANALOG_MAX		220
 #define NUNCHUK_ANALOG_THRESHOLD	5
 
+#define CLASSIC_ANALOG_L_MIN		0
 #define CLASSIC_ANALOG_L_MAX		63
+#define CLASSIC_ANALOG_R_MIN		0
 #define CLASSIC_ANALOG_R_MAX		31
 #define CLASSIC_TRIGGER_MAX		31
 #define CLASSIC_ANALOG_THRESHOLD	3
@@ -438,24 +438,11 @@ static void set_input_emulation()
 
 	switch (wiimote.extension) {
 	case WIIMOTE_EXT_NUNCHUK: {
-		unsigned char lx;
-		unsigned char ly;
-		unsigned char sx = wiimote.nunchuk.sx;
-		unsigned char sy = 255 - wiimote.nunchuk.sy;
+		unsigned char lx = clamp(wiimote.nunchuk.sx, NUNCHUK_ANALOG_MIN, NUNCHUK_ANALOG_MAX);
+		unsigned char ly = 255 - clamp(wiimote.nunchuk.sy, NUNCHUK_ANALOG_MIN, NUNCHUK_ANALOG_MAX);
 
-		if (sx > NUNCHUK_ANALOG_X_MAX)
-			lx = 255;
-		else if (sx < NUNCHUK_ANALOG_X_MIN)
-			lx = 0;
-		else
-			lx = ((sx - NUNCHUK_ANALOG_X_MIN) * 255) / NUNCHUK_ANALOG_X_RANGE;
-
-		if (sy > NUNCHUK_ANALOG_Y_MAX)
-			ly = 255;
-		else if (sx < NUNCHUK_ANALOG_Y_MIN)
-			ly = 0;
-		else
-			ly = ((sy - NUNCHUK_ANALOG_Y_MIN) * 255) / NUNCHUK_ANALOG_Y_RANGE;
+		lx = interpolate(lx, NUNCHUK_ANALOG_MIN, NUNCHUK_ANALOG_MAX, 0, 255);
+		ly = interpolate(ly, NUNCHUK_ANALOG_MIN, NUNCHUK_ANALOG_MAX, 0, 255);
 
 		if ((abs((signed char)lx - 128) > NUNCHUK_ANALOG_THRESHOLD) ||
 		    (abs((signed char)ly - 128) > NUNCHUK_ANALOG_THRESHOLD)) {
@@ -503,16 +490,20 @@ static void set_input_emulation()
 		if (wiimote.classic.buttons & CLASSIC_BTN_HOME)
 			buttons |= SCE_CTRL_INTERCEPTED;
 
+		unsigned char lx = clamp(wiimote.classic.lx, CLASSIC_ANALOG_L_MIN, CLASSIC_ANALOG_L_MAX);
+		unsigned char ly = clamp(wiimote.classic.ly, CLASSIC_ANALOG_L_MIN, CLASSIC_ANALOG_L_MAX);
+		unsigned char rx = clamp(wiimote.classic.rx, CLASSIC_ANALOG_R_MIN, CLASSIC_ANALOG_R_MAX);
+		unsigned char ry = clamp(wiimote.classic.ry, CLASSIC_ANALOG_R_MIN, CLASSIC_ANALOG_R_MAX);
 
-		unsigned char lx = (wiimote.classic.lx * 255) / CLASSIC_ANALOG_L_MAX;
-		unsigned char ly = ((CLASSIC_ANALOG_L_MAX - wiimote.classic.ly) * 255) / CLASSIC_ANALOG_L_MAX;
-		unsigned char rx = (wiimote.classic.rx * 255) / CLASSIC_ANALOG_R_MAX;
-		unsigned char ry = ((CLASSIC_ANALOG_R_MAX - wiimote.classic.ry) * 255) / CLASSIC_ANALOG_R_MAX;
+		lx = interpolate(lx, CLASSIC_ANALOG_L_MIN, CLASSIC_ANALOG_L_MAX, 0, 255);
+		ly = interpolate(ly, CLASSIC_ANALOG_L_MIN, CLASSIC_ANALOG_L_MAX, 0, 255);
+		rx = interpolate(rx, CLASSIC_ANALOG_R_MIN, CLASSIC_ANALOG_R_MAX, 0, 255);
+		ry = interpolate(ry, CLASSIC_ANALOG_R_MIN, CLASSIC_ANALOG_R_MAX, 0, 255);
 
-		if ((abs((signed char)wiimote.classic.lx - 32) > CLASSIC_ANALOG_THRESHOLD) ||
-		    (abs((signed char)wiimote.classic.ly - 32) > CLASSIC_ANALOG_THRESHOLD) ||
-		    (abs((signed char)wiimote.classic.rx - 16) > CLASSIC_ANALOG_THRESHOLD) ||
-		    (abs((signed char)wiimote.classic.ry - 16) > CLASSIC_ANALOG_THRESHOLD)) {
+		if ((abs((signed char)lx - 128) > CLASSIC_ANALOG_THRESHOLD) ||
+		    (abs((signed char)ly - 128) > CLASSIC_ANALOG_THRESHOLD) ||
+		    (abs((signed char)rx - 128) > CLASSIC_ANALOG_THRESHOLD) ||
+		    (abs((signed char)ry - 128) > CLASSIC_ANALOG_THRESHOLD)) {
 			js_moved = 1;
 		}
 
