@@ -496,7 +496,7 @@ static void set_input_emulation()
 		unsigned char ry = clamp(wiimote.classic.ry, CLASSIC_ANALOG_R_MIN, CLASSIC_ANALOG_R_MAX);
 
 		lx = interpolate(lx, CLASSIC_ANALOG_L_MIN, CLASSIC_ANALOG_L_MAX, 0, 255);
-		ly = interpolate(ly, CLASSIC_ANALOG_L_MIN, CLASSIC_ANALOG_L_MAX, 0, 255);
+		ly = 255 - interpolate(ly, CLASSIC_ANALOG_L_MIN, CLASSIC_ANALOG_L_MAX, 0, 255);
 		rx = interpolate(rx, CLASSIC_ANALOG_R_MIN, CLASSIC_ANALOG_R_MAX, 0, 255);
 		ry = interpolate(ry, CLASSIC_ANALOG_R_MIN, CLASSIC_ANALOG_R_MAX, 0, 255);
 
